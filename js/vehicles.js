@@ -24,14 +24,18 @@ export const VEHICLES = {
     name: 'Sinotruk Homan 612i',
     short: 'Homan',
     fuel: 'diesel',
-    displacement: 2.8,
+    // Motor JE493ZLQ5 (Jiangxi Isuzu 493): 2.771 L turbo intercooler, 85 kW (116 hp) a 3800 rpm,
+    // 285 N·m entre 1800 y 2200 rpm.
+    displacement: 2.771,
     nGears: 6,
-    // Solo se midieron 5ª y 6ª (julio 2026); las demás se aprenden manejando.
-    gearRatios: [28.5, 36.0],
+    // Caja Wanliyang WLY6T40 (400 N·m). Relaciones de la serie WLY6G40 (6.14):
+    // 6.14 / 3.36 / 2.11 / 1.34 / 1.00 / 0.79. La 5ª y 6ª medidas en el camión (28.5 y 36.0 km/h
+    // por 1000 rpm) calzan con 1.00 y 0.79, así que el resto se calcula con el mismo factor.
+    gearRatios: [6.14, 3.36, 2.11, 1.34, 1.0, 0.79].map((r) => Math.round((28.47 / r) * 100) / 100),
     eco: { min: 1400, max: 2200 },
-    ecoTop: { min: 1500, max: 2300 }, // 6ª: ~55–83 km/h
-    power: { min: 1600, minLoaded: 1800, max: 3000, targetMax: 2700 },
-    lugRpm: 1100,
+    ecoTop: { min: 1500, max: 2300 }, // 6ª: ~54–83 km/h
+    power: { min: 1800, minLoaded: 2000, max: 3600, targetMax: 3200 }, // torque máx. 1800–2200, potencia máx. 3800
+    lugRpm: 1200,
     upMinRpm: 1150,
     gaugeMax: 4000,
     idleRpm: 750,

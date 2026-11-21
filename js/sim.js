@@ -24,9 +24,9 @@ const MODELS = {
     pids: ['01', '03', '04', '05', '06', '07', '0B', '0C', '0D', '0E', '0F', '11', '13', '14', '15', '20', '21', '31', '40', '41', '42', '43', '44', '45', '46', '47', '49', '4C', '56'],
   },
   homan: {
-    ratios: [7.5, 12.5, 17.5, 22.5, ...VEHICLES.homan.gearRatios], // 1ª–4ª supuestas, 5ª–6ª medidas
+    ratios: VEHICLES.homan.gearRatios, // caja WLY6T40
     vmax: 82, m: 5500, cda: 3.6, crr: 0.008, idle: 750, cut: 1000,
-    torque: (rpm) => (rpm < 1400 ? 200 + (150 * (rpm - 900)) / 500 : rpm < 2600 ? 350 : Math.max(220, 350 - ((rpm - 2600) / 600) * 120)),
+    torque: (rpm) => (rpm < 1800 ? 190 + (95 * (rpm - 900)) / 900 : rpm <= 2200 ? 285 : Math.max(200, 285 - ((rpm - 2200) / 1600) * 72)), // JE493ZLQ5
     shift: [1800, 2400], downFull: 1450,
     bsfc: (rpm, frac) => 212 * (1 + 0.12 * ((rpm - 1600) / 1000) ** 2 + 0.7 * (1 - frac) ** 2),
     friction: (rpm) => (rpm / 1000) * 1.8,

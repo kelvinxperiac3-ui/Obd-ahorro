@@ -6,13 +6,13 @@ Vehículos (se eligen en la pantalla Manejar; cada uno guarda sus datos por sepa
 
 | | Changan MD201 2019 | Sinotruk Homan 612i 2023 |
 |---|---|---|
-| Motor | Gasolina 1.2 (sin MAF) | Diésel Isuzu ~2.8 turbo |
-| Caja | Manual 5 marchas | Manual 6 marchas |
+| Motor | Gasolina 1.2 (sin MAF) | Diésel JE493ZLQ5 2.77 L turbo: 116 hp a 3800 rpm, 285 N·m a 1800–2200 rpm |
+| Caja | Manual 5 marchas | Wanliyang WLY6T40, 6 marchas (6.14/3.36/2.11/1.34/1.00/0.79) |
 | Consumo | Calculado con MAP | Informado por la ECU (015E) |
 | Velocidad | OBD (010D) | **GPS del teléfono** (la ECU informa 0) |
 | Pedal | Mariposa (0111) | Pedal D (0149) |
 | Zona de ahorro inicial | 1500–2500 rpm (5ª hasta 2900) | 1400–2200 rpm (6ª hasta 2300) |
-| Zona de fuerza | 3000–5500 rpm | 1600–3000 rpm |
+| Zona de fuerza | 3000–5500 rpm | 1800–3600 rpm (2000 cargado) |
 
 Adaptador: **KONNWEI KW905** (ELM327 Bluetooth LE).
 

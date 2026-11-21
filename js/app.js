@@ -54,6 +54,8 @@ function loadVehicle(id) {
     loaded: false,
   }, store.get(`cfg.${V.id}`, {}));
   cfg.voice = store.get('voice', true);
+  // La versión anterior solo tenía la 5ª y 6ª del Homan: pasar a las 6 marchas de la caja.
+  if (V.id === 'homan' && JSON.stringify(cfg.gearRatios) === '[28.5,36]') cfg.gearRatios = V.gearRatios;
   gears = new GearLearner(cfg.nGears, store.get(`gears.${V.id}`, null), cfg.gearRatios);
   stats = new RpmStats(store.get(`stats.${V.id}`, null));
   analyzer = new Analyzer(gears, stats);

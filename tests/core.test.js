@@ -191,7 +191,7 @@ test('consejo de fuerza en la MD201', () => {
 import { VEHICLES } from '../js/vehicles.js';
 
 test('Homan: preset parcial (5ª y 6ª) y el resto se aprende', () => {
-  const g = new GearLearner(6, null, VEHICLES.homan.gearRatios);
+  const g = new GearLearner(6, null, [28.5, 36.0]); // solo 5ª y 6ª conocidas
   assert.equal(g.gearFor(80, 2220), 6);
   assert.equal(g.gearFor(80, 2807), 5);
   assert.equal(g.ratioOf(4), null);
@@ -237,4 +237,15 @@ test('consejos del diésel con su zona', () => {
   // subida: 6ª a 1500 rpm → bajar a 5ª (≈1900)
   const p = powerAdvice({ rpm: 1500, speed: 54, gear: 6 }, g, 6, false, V.power);
   assert.equal(p.shift, 5);
+});
+
+test('Homan: 6 marchas de la caja WLY6T40 calzan con lo medido', () => {
+  const g = new GearLearner(6, null, VEHICLES.homan.gearRatios);
+  assert.equal(g.gearFor(80, 2807), 5); // medido: 28.5 km/h por 1000 rpm
+  assert.equal(g.gearFor(78, 2164), 6); // medido: 36.0
+  assert.equal(g.gearFor(20, 2360), 2);
+  // subida en 6ª a 1700 rpm: bajar a 5ª (≈2150 rpm)
+  assert.equal(powerAdvice({ rpm: 1700, speed: 61, gear: 6 }, g, 6, false, VEHICLES.homan.power).shift, 5);
+  // cargado, 5ª a 1950: bajar a 4ª (≈2610)
+  assert.equal(powerAdvice({ rpm: 1950, speed: 55.5, gear: 5 }, g, 6, true, VEHICLES.homan.power).shift, 4);
 });
