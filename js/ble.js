@@ -32,7 +32,19 @@ export class BleTransport {
     });
     this.name = this.device.name || 'Adaptador BLE';
     this.device.addEventListener('gattserverdisconnected', () => this.onDisconnect?.());
-    log(`Conectando a ${this.name}…`);
+    await this._setup(log);
+  }
+
+  get connected() { return !!this.device?.gatt?.connected; }
+
+  /** Vuelve a conectar al mismo adaptador, sin mostrar la lista de dispositivos. */
+  async reconnect(log = () => {}) {
+    if (!this.device) throw new Error('No hay adaptador elegido');
+    await this._setup(log, true);
+  }
+
+  async _setup(log, quiet = false) {
+    if (!quiet) log(`Conectando a ${this.name}…`);
     const server = await this.device.gatt.connect();
     const services = await server.getPrimaryServices();
     if (!services.length) throw new Error('El adaptador no expone servicios conocidos. ¿Es Bluetooth clásico?');
@@ -46,7 +58,7 @@ export class BleTransport {
       let w = null;
       for (const c of chars) {
         const p = c.properties;
-        log(`  servicio ${short(s.uuid)} car. ${short(c.uuid)} ${p.notify ? 'N' : ''}${p.indicate ? 'I' : ''}${p.write ? 'W' : ''}${p.writeWithoutResponse ? 'w' : ''}`);
+        if (!quiet) log(`  servicio ${short(s.uuid)} car. ${short(c.uuid)} ${p.notify ? 'N' : ''}${p.indicate ? 'I' : ''}${p.write ? 'W' : ''}${p.writeWithoutResponse ? 'w' : ''}`);
         if (!n && (p.notify || p.indicate)) n = c;
         if (!w && (p.write || p.writeWithoutResponse)) w = c;
       }

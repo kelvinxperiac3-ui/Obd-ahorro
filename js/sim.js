@@ -66,7 +66,10 @@ export class SimTransport {
   }
 
   async connect() {}
-  async disconnect() { this.onDisconnect?.(); }
+  async disconnect() { this.closed = true; }
+  get connected() { return !this.closed; }
+  /** Para probar la reconexión automática. */
+  async reconnect() { this.closed = false; this.last = performance.now(); }
 
   /** Velocidad "GPS" simulada (km/h), para vehículos que no la informan por OBD. */
   gpsSpeed() { return this.v; }

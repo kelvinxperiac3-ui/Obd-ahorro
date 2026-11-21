@@ -138,9 +138,13 @@ label.btn { display: inline-block; }
 .gtable b.ok { color: var(--green); }
 
 .modebar { display: flex; justify-content: space-between; align-items: center; min-height: 36px; gap: 8px; }
-.modebar .toggle { margin-left: auto; }
+.modebar #btnVoice { margin-left: auto; }
 .btn.toggle.on { background: #7c2d12; border-color: #ea580c; color: #fff; }
 .badge { background: #ea580c; color: #fff; font-weight: 700; font-size: .85rem; padding: 6px 10px; border-radius: 999px; }
 .rpmzone.power { background: color-mix(in srgb, #ea580c 45%, transparent); }
 
 .vsel { font: inherit; font-weight: 600; font-size: .9rem; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px 8px; }
+
+.btn.voice { font-size: 1.1rem; padding: 4px 10px; line-height: 1.2; }
+.btn.voice.on { background: var(--panel); border-color: var(--line); color: var(--text); }
+.btn.voice:not(.on) { background: #3f1d1d; border-color: var(--red); }

@@ -12,7 +12,7 @@ import { HillDetector, powerAdvice, pedalPct } from './power.js';
 import { advise, gearName } from './advise.js';
 
 const $ = (id) => document.getElementById(id);
-export const APP_VERSION = '2026-11-21d';
+export const APP_VERSION = '2026-11-21e';
 
 // ---------- persistencia (localStorage protegido) ----------
 const store = {
@@ -90,6 +90,8 @@ let useGps = false;
 let speedSrc = 'OBD';
 let zeroSpeedSince = null;
 let noRpm = 0;
+let reconnecting = false;
+let hiddenAt = null;
 let multi = false; // varias PIDs por consulta (CAN)
 let suffix = false; // atajo "1": no esperar más respuestas
 let rate = { n: 0, q: 0, ms: 0, since: performance.now() };
@@ -136,7 +138,7 @@ async function start(kind) {
     }
     setConn('busy', 'Conectando…');
     await transport.connect(log);
-    transport.onDisconnect = () => { if (running) { toast('Se perdió la conexión con el adaptador'); stop(); } };
+    transport.onDisconnect = () => { if (running && !reconnecting) reconnect(); };
     elm = new Elm327(transport, log);
     setConn('busy', 'Iniciando ELM327…');
     const info = await elm.init();
@@ -292,7 +294,48 @@ function gpsNow() {
 async function keepAwake() {
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* opcional */ }
 }
-document.addEventListener('visibilitychange', () => { if (running && document.visibilityState === 'visible') keepAwake(); });
+document.addEventListener('visibilitychange', () => {
+  if (!running) return;
+  if (document.visibilityState === 'hidden') {
+    hiddenAt = Date.now();
+    log('App en segundo plano: Chrome puede pausar la lectura');
+    return;
+  }
+  keepAwake();
+  if (hiddenAt) log(`De vuelta en primer plano tras ${Math.round((Date.now() - hiddenAt) / 1000)} s`);
+  hiddenAt = null;
+  // Si el Bluetooth se cortó mientras estaba en segundo plano, reconectar solo.
+  if (transport?.connected === false && !reconnecting) reconnect();
+});
+
+// ---------- reconexión automática ----------
+// Si el adaptador se desconecta (corte de Bluetooth, segundo plano, bache), intenta volver
+// a conectar al mismo adaptador sin pedir nada. El viaje sigue donde iba.
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function reconnect() {
+  if (!transport?.reconnect) { toast('Se perdió la conexión con el adaptador'); stop(); return; }
+  reconnecting = true;
+  setConn('busy', 'Reconectando…');
+  for (let i = 1; i <= 6 && running; i++) {
+    try {
+      log(`Reconectando (intento ${i})…`);
+      await transport.reconnect(log);
+      elm = new Elm327(transport, log);
+      await elm.init();
+      await testFast();
+      reconnecting = false;
+      setConn('on', transport.name);
+      toast('Reconectado');
+      log('Reconectado');
+      return;
+    } catch (e) {
+      log(`Reconexión ${i}: ${e.message}`);
+      await sleep(Math.min(8000, 1500 * i));
+    }
+  }
+  reconnecting = false;
+  if (running) { toast('No pude reconectar con el adaptador'); stop(); }
+}
 
 // ---------- ciclo de lectura ----------
 // Qué pedir en cada vuelta: RPM y velocidad siempre (es lo que se ve cambiar al manejar);
@@ -310,12 +353,13 @@ const cmdFor = (pids) => '01' + pids.join('') + (suffix ? '1' : '');
 
 async function loop() {
   while (running) {
+    if (reconnecting) { await sleep(300); continue; }
     const s = {};
     const list = cycleList(cycle++);
     const t0 = performance.now();
     if (multi) {
       // Hasta 6 PIDs por consulta: una sola ida y vuelta por Bluetooth.
-      for (let i = 0; i < list.length && running; i += 6) {
+      for (let i = 0; i < list.length && running && !reconnecting; i += 6) {
         const chunk = list.slice(i, i + 6);
         try {
           const vals = parseMulti(await elm.send(cmdFor(chunk), 2500), chunk);
@@ -336,6 +380,7 @@ async function loop() {
     } else {
       for (const pid of list) {
         if (!running) return;
+        if (reconnecting) break;
         try {
           const lines = await elm.send(cmdFor([pid]), 2000);
           const v = decode(lines, pid);
@@ -355,6 +400,7 @@ async function loop() {
       }
     }
     if (!running) return;
+    if (reconnecting) continue;
     rate.ms += performance.now() - t0;
     rate.n++;
     process(s);
@@ -712,6 +758,28 @@ $('fileImport').onchange = async (e) => {
   }
 };
 
+function showVoice() {
+  const b = $('btnVoice');
+  b.textContent = cfg.voice ? '🔊' : '🔇';
+  b.classList.toggle('on', cfg.voice);
+  b.setAttribute('aria-label', cfg.voice ? 'Voz activada: tocar para silenciar' : 'Voz silenciada: tocar para activar');
+  $('cfgVoice').checked = cfg.voice;
+}
+$('btnVoice').onclick = () => {
+  cfg.voice = !cfg.voice;
+  saveVehicleCfg();
+  showVoice();
+  if ('speechSynthesis' in window) {
+    speechSynthesis.cancel(); // corta de inmediato si estaba hablando
+    if (cfg.voice) {
+      const u = new SpeechSynthesisUtterance('Avisos de voz activados');
+      u.lang = 'es-ES';
+      speechSynthesis.speak(u);
+    }
+  }
+  toast(cfg.voice ? 'Avisos por voz activados' : 'Avisos por voz silenciados', 2000);
+};
+
 function showLoaded() {
   const b = $('btnLoaded');
   b.classList.toggle('on', cfg.loaded);
@@ -724,6 +792,7 @@ $('btnLoaded').onclick = () => {
   toast(cfg.loaded ? 'Modo cargado: aviso para bajar de marcha antes en las subidas' : 'Modo normal');
 };
 showLoaded();
+showVoice();
 
 function setGauge() {
   const step = V.gaugeMax > 4000 ? 1000 : 500;
@@ -778,6 +847,8 @@ function saveCfg() {
   const ng = Math.min(6, Math.max(4, Number($('cfgGears').value) || 5));
   if (ng !== cfg.nGears) { cfg.nGears = ng; gears.nGears = ng; gears._recompute(); }
   cfg.voice = $('cfgVoice').checked;
+  if (!cfg.voice && 'speechSynthesis' in window) speechSynthesis.cancel();
+  setTimeout(showVoice);
   cfg.dfco = $('cfgDfco').checked;
   cfg.ve = Number($('cfgVe').value) || DEFAULT_ENGINE.ve;
   cfg.corr = Number($('cfgCorr').value) || 1;
