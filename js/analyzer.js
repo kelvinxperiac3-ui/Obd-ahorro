@@ -32,7 +32,17 @@ export class Analyzer {
     this.lastT = s.t;
     if (dt > 10) this.hist = [];
     if (s.speed != null && s.rpm != null) this.gears.add(s.speed, s.rpm);
-    const gear = this.gears.gearFor(s.speed, s.rpm);
+    let gear = this.gears.gearFor(s.speed, s.rpm);
+    // Con lectura rápida, la velocidad se lee una vuelta por medio: al acelerar o frenar la
+    // relación velocidad/RPM queda unas décimas desfasada. Si no calza con ninguna marcha pero
+    // sigue cerca (±15 %) de la que llevaba hace menos de 2 s, se mantiene esa marcha.
+    if (gear) {
+      this.lastGear = gear;
+      this.lastGearT = s.t;
+    } else if (this.lastGear && s.t - this.lastGearT < 2 && s.speed > 4 && s.rpm > 1000) {
+      const r = this.gears.ratioOf(this.lastGear);
+      if (r && Math.abs(Math.log((s.speed * 1000) / s.rpm / r)) < 0.15) gear = this.lastGear;
+    }
     const a = s.speed != null ? this.accel(s.t, s.speed) : null;
     const steady = a != null && Math.abs(a) < STEADY_ACCEL;
     // Para la zona solo cuentan momentos con el motor empujando, en una marcha conocida

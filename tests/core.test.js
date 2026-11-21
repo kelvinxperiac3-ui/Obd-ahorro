@@ -321,3 +321,27 @@ test('tanque: tramos sin la app y deshacer', () => {
   addDriving(t2, 20, 2);
   assert.ok(registerFill(t2, { liters: 2, full: true }).warnings.includes('corto'));
 });
+
+test('mantiene la marcha con un desfase breve de la velocidad', () => {
+  const an = new Analyzer(new GearLearner(5, null, MD201_RATIOS));
+  // 3ª a 31 km/h ≈ 1990 rpm
+  assert.equal(an.feed({ t: 0, speed: 31, rpm: 1990, lph: 2 }).gear, 3);
+  // acelerando: RPM ya subió pero la velocidad leída es la de antes (10 % de desfase)
+  assert.equal(an.feed({ t: 0.4, speed: 31, rpm: 2200, lph: 3 }).gear, 3);
+  // embrague pisado: RPM cae al ralentí → sin marcha
+  assert.equal(an.feed({ t: 0.8, speed: 31, rpm: 850, lph: 1 }).gear, null);
+  // pasados 2 s sin calzar, ya no se mantiene
+  an.feed({ t: 1, speed: 31, rpm: 1990, lph: 2 });
+  assert.equal(an.feed({ t: 3.5, speed: 31, rpm: 2250, lph: 3 }).gear, null);
+});
+
+test('zona de 5ª: amplía el mejor rango cuando queda angosto', () => {
+  const st = new RS2();
+  // como los viajes de la MD201: más lento (menos rpm) rinde más
+  const eff = { 2000: 14.5, 2250: 13.0, 2500: 12.7, 2750: 12.3, 3000: 12.3, 3250: 10.8, 3500: 10.8, 3750: 10.1, 4000: 10.5 };
+  for (const [rpm, kml] of Object.entries(eff)) for (let i = 0; i < 60; i++) st.add({ rpm: +rpm + 10, speed: 60, lph: 60 / kml, gear: 5, dt: 1 });
+  const z = st.zone(5, 0.9, { min: 1500, max: 2900 });
+  assert.equal(z.learned, true);
+  assert.equal(z.min, 2000);
+  assert.equal(z.max, 2500);
+});

@@ -63,6 +63,15 @@ export class RpmStats {
     while (ok.has(min - BUCKET)) min -= BUCKET;
     while (ok.has(max + BUCKET)) max += BUCKET;
     max += BUCKET;
+    // Si quedó un solo rango, ampliar hacia el vecino con mejor rendimiento (mínimo 500 rpm),
+    // para que la zona sea manejable.
+    const kml = new Map(rows.map((r) => [r.rpm, r.kmL]));
+    while (max - min < BUCKET * 2) {
+      const below = kml.get(min - BUCKET);
+      const above = kml.get(max);
+      if (below == null && above == null) break;
+      if ((below ?? -1) >= (above ?? -1)) min -= BUCKET; else max += BUCKET;
+    }
     min = Math.max(min, fallback.min - 500);
     max = Math.min(max, fallback.max + 750);
     if (max - min < BUCKET * 2) return fb('borde');

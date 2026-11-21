@@ -13,7 +13,7 @@ import { advise, gearName } from './advise.js';
 import { newTank, addDriving, registerFill, undoFill, suggestedFactor } from './tank.js';
 
 const $ = (id) => document.getElementById(id);
-export const APP_VERSION = '2026-11-22c';
+export const APP_VERSION = '2026-11-22d';
 // Si la página (HTML) es de otra versión que este código, se recarga una vez sin caché.
 if (document.documentElement.dataset.v !== APP_VERSION) {
   let tried = null;
