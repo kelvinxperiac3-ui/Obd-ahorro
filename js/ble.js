@@ -45,7 +45,19 @@ export class BleTransport {
 
   async _setup(log, quiet = false) {
     if (!quiet) log(`Conectando a ${this.name}…`);
-    const server = await this.device.gatt.connect();
+    // En Android la primera conexión BLE a veces falla al azar (error 133): reintentar.
+    let server;
+    for (let i = 1; ; i++) {
+      try {
+        server = await this.device.gatt.connect();
+        break;
+      } catch (e) {
+        log(`  intento ${i} de conexión falló: ${e.message}`);
+        if (i >= 3) throw e;
+        try { this.device.gatt.disconnect(); } catch { /* nada */ }
+        await new Promise((r) => setTimeout(r, 800 * i));
+      }
+    }
     const services = await server.getPrimaryServices();
     if (!services.length) throw new Error('El adaptador no expone servicios conocidos. ¿Es Bluetooth clásico?');
 

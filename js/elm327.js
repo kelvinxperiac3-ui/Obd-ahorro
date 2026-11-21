@@ -14,6 +14,13 @@ export class Elm327 {
   _onData(s) {
     this.buf += s;
     const i = this.buf.indexOf('>');
+    if (i >= 0 && !this.pending) {
+      // Respuesta atrasada de un comando que ya se dio por perdido: se descarta, así no se
+      // confunde con la del comando siguiente.
+      this.buf = this.buf.slice(i + 1);
+      this.draining = false;
+      return;
+    }
     if (i < 0 || !this.pending) return;
     const raw = this.buf.slice(0, i);
     this.buf = this.buf.slice(i + 1);
@@ -21,6 +28,14 @@ export class Elm327 {
     this.pending = null;
     clearTimeout(p.timer);
     p.resolve(cleanLines(raw, p.cmd));
+  }
+
+  /** Espera (máx. `ms`) a que llegue el '>' de un comando anterior que se atrasó. */
+  async drain(ms = 1500) {
+    const t0 = Date.now();
+    while (this.draining && Date.now() - t0 < ms) await new Promise((r) => setTimeout(r, 50));
+    this.draining = false;
+    this.buf = '';
   }
 
   send(cmd, timeout = 2500) {
@@ -31,6 +46,7 @@ export class Elm327 {
         resolve,
         timer: setTimeout(() => {
           this.pending = null;
+          this.draining = true; // puede que la respuesta llegue tarde
           reject(new Error(`Sin respuesta a ${cmd}`));
         }, timeout),
       };
@@ -40,7 +56,8 @@ export class Elm327 {
         reject(e);
       });
     });
-    const p = this.queue.then(run, run);
+    const go = async () => { if (this.draining) await this.drain(); return run(); };
+    const p = this.queue.then(go, go);
     this.queue = p.catch(() => {});
     return p;
   }

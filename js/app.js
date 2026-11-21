@@ -13,7 +13,13 @@ import { advise, gearName } from './advise.js';
 import { newTank, addDriving, registerFill, undoFill, suggestedFactor } from './tank.js';
 
 const $ = (id) => document.getElementById(id);
-export const APP_VERSION = '2026-11-22b';
+export const APP_VERSION = '2026-11-22c';
+// Si la página (HTML) es de otra versión que este código, se recarga una vez sin caché.
+if (document.documentElement.dataset.v !== APP_VERSION) {
+  let tried = null;
+  try { tried = sessionStorage.getItem('obd.reloadFor'); sessionStorage.setItem('obd.reloadFor', APP_VERSION); } catch { /* nada */ }
+  if (tried !== APP_VERSION) location.reload();
+}
 
 // ---------- persistencia (localStorage protegido) ----------
 const store = {
@@ -128,6 +134,17 @@ function toast(msg, ms = 4000) {
 }
 
 // ---------- conexión ----------
+function friendlyError(e) {
+  const m = `${e.name || ''} ${e.message || e}`;
+  if (/cancel/i.test(m)) return 'Conexión cancelada.';
+  if (/not available|adapter|Bluetooth is off|disabled/i.test(m)) return 'El Bluetooth del teléfono está apagado o sin permiso. Actívalo (y la ubicación) y vuelve a intentar.';
+  if (/NotFoundError/i.test(m)) return 'No apareció el adaptador. Revisa que el KONNWEI tenga la luz encendida (botón de encendido), que el contacto esté en ON y que el teléfono tenga Bluetooth y ubicación activados.';
+  if (/GATT|NetworkError|connect|disconnected/i.test(m)) return 'El adaptador no aceptó la conexión. Cierra Car Scanner u otras apps OBD (el adaptador atiende a una sola), apaga y prende el KONNWEI y vuelve a intentar.';
+  if (/Sin respuesta a ATZ/i.test(m)) return 'El adaptador se conectó pero no responde. Desenchúfalo 5 segundos del puerto OBD y vuelve a intentar.';
+  if (/Sin respuesta a 0100|no logra hablar|UNABLE/i.test(m)) return 'El adaptador responde, pero la camioneta no. Pon el contacto en ON (o enciende el motor) y vuelve a intentar.';
+  return 'No pude conectar: ' + (e.message || e);
+}
+
 async function start(kind) {
   if (running) { await stop(); return; }
   try {
@@ -171,8 +188,8 @@ async function start(kind) {
     keepAwake();
     loop();
   } catch (e) {
-    log('ERROR: ' + (e.message || e));
-    if (e.name !== 'NotFoundError') toast(e.message || String(e), 7000);
+    log('ERROR: ' + (e.name ? e.name + ': ' : '') + (e.message || e));
+    if (e.name !== 'NotFoundError' || !/cancel/i.test(e.message)) toast(friendlyError(e), 12000);
     await stop();
   }
 }
@@ -1048,3 +1065,13 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
 
 // Para pruebas automáticas
 window.__obd = { live, trip, stats: () => stats, gears: () => gears, sim: () => transport };
+
+// Cualquier error inesperado se muestra en pantalla y en el registro (antes podía dejar
+// botones sin responder sin ningún aviso).
+window.addEventListener('error', (e) => {
+  log('ERROR inesperado: ' + e.message);
+  toast('Error en la app: ' + e.message + '. Cierra y vuelve a abrir la app.', 10000);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  log('ERROR inesperado: ' + (e.reason?.message || e.reason));
+});
