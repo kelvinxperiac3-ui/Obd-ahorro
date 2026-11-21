@@ -38,17 +38,35 @@ export class RpmStats {
 
   /**
    * Zona verde: rangos contiguos alrededor del mejor km/L con >= 90 % del mejor.
-   * Si hay pocos datos, devuelve la zona por defecto.
+   *
+   * Solo se confía en lo aprendido si los datos permiten comparar de verdad. Si no,
+   * devuelve la zona por defecto con `reason`:
+   *  - 'pocos':  menos de 4 rangos con datos suficientes
+   *  - 'rango':  todo en un rango estrecho (< 1000 rpm), ej. un viaje solo de carretera
+   *  - 'parejo': todos los rangos rinden parecido (±10 %): los datos no distinguen
+   *  - 'borde':  el mejor está en el rango más alto medido (el óptimo podría estar fuera)
+   * La zona aprendida además se limita a ±500/+750 rpm de la zona por defecto.
    */
   zone(gear = 0, tolerance = 0.9, fallback = DEFAULT_ZONE) {
     const rows = this.rows(gear).filter((r) => r.t >= MIN_BUCKET_SECONDS && r.kmL);
-    if (rows.length < 3) return { ...fallback };
+    const fb = (reason) => ({ ...fallback, learned: false, reason });
+    if (rows.length < 4) return fb('pocos');
+    const lo = rows[0].rpm;
+    const hi = rows[rows.length - 1].rpm;
+    if (hi - lo < 1000) return fb('rango');
     const best = rows.reduce((a, b) => (b.kmL > a.kmL ? b : a));
+    const worst = rows.reduce((a, b) => (b.kmL < a.kmL ? b : a));
+    if (worst.kmL >= best.kmL * tolerance) return fb('parejo');
+    if (best.rpm === hi) return fb('borde');
     const ok = new Set(rows.filter((r) => r.kmL >= best.kmL * tolerance).map((r) => r.rpm));
     let min = best.rpm; let max = best.rpm;
     while (ok.has(min - BUCKET)) min -= BUCKET;
     while (ok.has(max + BUCKET)) max += BUCKET;
-    return { min, max: max + BUCKET, best: best.kmL, bestRpm: best.rpm, learned: true };
+    max += BUCKET;
+    min = Math.max(min, fallback.min - 500);
+    max = Math.min(max, fallback.max + 750);
+    if (max - min < BUCKET * 2) return fb('borde');
+    return { min, max, best: best.kmL, bestRpm: best.rpm, learned: true };
   }
 
   /** Por cada banda de velocidad: km/L de cada marcha usada (con datos suficientes). */

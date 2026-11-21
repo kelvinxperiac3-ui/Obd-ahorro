@@ -32,7 +32,9 @@ export function advise(s, zone, gears, nGears, opts = {}) {
   }
 
   if (s.rpm > zone.max) {
-    const color = s.rpm > zone.max + (opts.redMargin ?? 600) ? 'red' : 'yellow';
+    // En la última marcha ir más rápido gasta más, pero no es "error": rojo solo bastante arriba.
+    const margin = g === nGears ? (opts.redMarginTop ?? 1200) : (opts.redMargin ?? 600);
+    const color = s.rpm > zone.max + margin ? 'red' : 'yellow';
     if (up && up >= Math.max(upMin, zone.min - 300)) return { color, msg: `Sube a ${gearName(g + 1)}`, shift: g + 1 };
     if (g === nGears) return { color, msg: 'Más rápido = más consumo' };
     return { color, msg: 'RPM altas' };

@@ -249,3 +249,35 @@ test('Homan: 6 marchas de la caja WLY6T40 calzan con lo medido', () => {
   // cargado, 5ª a 1950: bajar a 4ª (≈2610)
   assert.equal(powerAdvice({ rpm: 1950, speed: 55.5, gear: 5 }, g, 6, true, VEHICLES.homan.power).shift, 4);
 });
+
+import { parseMulti } from '../js/obd.js';
+import { RpmStats as RS2 } from '../js/stats.js';
+
+test('lee varias PIDs en una consulta (CAN, varias tramas)', () => {
+  const lines = ['00C', '0:410C3D5A0D64', '1:0B5511460302', '2:00000000000000'];
+  const v = parseMulti(lines, ['0C', '0D', '0B', '11', '03']);
+  assert.equal(v['0C'], 3926.5);
+  assert.equal(v['0D'], 100);
+  assert.equal(v['0B'], 85);
+  assert.ok(Math.abs(v['11'] - 27.45) < 0.01);
+  assert.equal(v['03'], 2);
+  // una sola trama
+  assert.deepEqual(parseMulti(['410C1AF80D3C'], ['0C', '0D']), { '0C': 1726, '0D': 60 });
+  // no soportado
+  assert.deepEqual(parseMulti(['NO DATA'], ['0C', '0D']), {});
+});
+
+test('no aprende una zona de un viaje solo de carretera', () => {
+  // como el viaje del 21-11: todo en 5ª entre 3000 y 4250 rpm, ~10 km/L parejo
+  const st = new RS2();
+  const eff = { 3000: 10.5, 3250: 9.9, 3500: 10.5, 3750: 10.0, 4000: 10.2 };
+  for (const [rpm, kml] of Object.entries(eff)) for (let i = 0; i < 120; i++) st.add({ rpm: +rpm + 10, speed: 100, lph: 100 / kml, gear: 5, dt: 1 });
+  const z = st.zone(5, 0.9, { min: 1500, max: 2900 });
+  assert.equal(z.learned, false);
+  assert.equal(z.min, 1500);
+  assert.equal(z.max, 2900);
+  // estrecho
+  const st2 = new RS2();
+  for (const rpm of [3500, 3750, 4000, 4250]) for (let i = 0; i < 60; i++) st2.add({ rpm: rpm + 10, speed: 100, lph: rpm / 300, gear: 5, dt: 1 });
+  assert.equal(st2.zone(5, 0.9, { min: 1500, max: 2900 }).reason, 'rango');
+});

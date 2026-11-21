@@ -32,6 +32,9 @@ Adaptador: **KONNWEI KW905** (ELM327 Bluetooth LE).
   sin mandarte a una marcha que pase de 5000 rpm. En plano vuelve sola al modo ahorro. El botón **Voy cargado** hace que entre antes.
   Avisa también si te pasas de 5500 rpm.
 - **Importa registros de Car Scanner** (CSV) para aprender de viajes anteriores.
+- **Lectura rápida:** si la ECU es CAN, pide varias PIDs en una sola consulta (hasta 6), con vuelta automática a una por vez.
+- La zona aprendida solo reemplaza a la recomendada cuando los datos permiten comparar (al menos 4 rangos, 1000 rpm de amplitud
+  y diferencias reales de rendimiento). Un viaje solo de carretera no cambia la zona.
 - Modo **Demo** con un simulador, para probar sin la camioneta.
 - Exporta el viaje en CSV y lo aprendido en JSON. Funciona sin señal una vez abierta (service worker).
 

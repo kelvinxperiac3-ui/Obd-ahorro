@@ -141,6 +141,21 @@ export class SimTransport {
     setTimeout(() => this.onData?.(reply + '\r\r>'), 25);
   }
 
+  /** Respuesta CAN a varias PIDs, en tramas numeradas como un ELM327 real. */
+  multi(pids) {
+    let data = '41';
+    for (const p of pids) {
+      const r = this.answer('01' + p);
+      if (r.startsWith('41')) data += r.slice(2);
+    }
+    if (data.length <= 14) return data; // cabe en una trama
+    const bytes = data.length / 2;
+    const frames = [bytes.toString(16).toUpperCase().padStart(3, '0')];
+    frames.push('0:' + data.slice(0, 12));
+    for (let i = 12, n = 1; i < data.length; i += 14, n++) frames.push(`${(n % 16).toString(16).toUpperCase()}:` + data.slice(i, i + 14));
+    return frames.join('\r');
+  }
+
   answer(cmd) {
     const hex = (n, w = 2) => Math.round(Math.max(0, n)).toString(16).toUpperCase().padStart(w, '0');
     const diesel = this.vid === 'homan';
@@ -148,6 +163,7 @@ export class SimTransport {
     if (cmd === 'ATDPN') return 'A6';
     if (cmd.startsWith('AT')) return 'OK';
     if (/^01(00|20|40)$/.test(cmd)) return mask(cmd.slice(2), this.M.pids);
+    if (/^01([0-9A-F]{2}){2,6}$/.test(cmd)) return this.multi(cmd.slice(2).match(/../g));
     const pid = cmd.slice(2);
     if (cmd.startsWith('01') && !this.M.pids.includes(pid)) return 'NO DATA';
     switch (cmd) {

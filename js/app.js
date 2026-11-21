@@ -1,7 +1,7 @@
 import { BleTransport } from './ble.js';
 import { SimTransport } from './sim.js';
 import { Elm327 } from './elm327.js';
-import { PIDS, decode, readSupported } from './obd.js';
+import { PIDS, decode, readSupported, parseMulti } from './obd.js';
 import { DEFAULT_ENGINE, fuelLph, kmPerL } from './fuel.js';
 import { GearLearner } from './gears.js';
 import { RpmStats, BUCKET, MIN_BUCKET_SECONDS } from './stats.js';
@@ -88,6 +88,8 @@ const gps = { speed: null, at: 0, watch: null };
 let useGps = false;
 let speedSrc = 'OBD';
 let zeroSpeedSince = null;
+let noRpm = 0;
+let multi = false; // varias PIDs por consulta (CAN)
 let rate = { n: 0, since: performance.now() };
 const live = {};
 const trip = newTrip();
@@ -140,6 +142,7 @@ async function start(kind) {
     const sup = await readSupported(elm);
     log(`PIDs soportados: ${[...sup].join(' ') || '(no informó)'}`);
     buildPollList(sup);
+    multi = await testMulti();
     setConn('on', transport.name);
     $('btnConnect').textContent = 'Desconectar';
     $('btnDemo').hidden = true;
@@ -168,6 +171,9 @@ async function stop() {
   try { await wakeLock?.release(); } catch { /* nada */ }
   wakeLock = null;
   stopGps();
+  multi = false;
+  renderNoEngine();
+  $('advice').textContent = 'Desconectado';
   save(true);
 }
 
@@ -194,6 +200,24 @@ function buildPollList(sup) {
   if (has('04')) slowList.push('04');
   noData = {};
   showPids();
+}
+
+// Prueba si la ECU acepta varias PIDs en una consulta (solo CAN). Si no, se usa una por vez.
+async function testMulti() {
+  const probe = [...pollList, ...slowList].slice(0, 3);
+  if (probe.length < 2) return false;
+  try {
+    const lines = await elm.send('01' + probe.join(''), 3000);
+    const vals = parseMulti(lines, probe);
+    const ok = probe.every((p) => vals[p] != null);
+    log(`Consulta múltiple 01${probe.join('')}: ${ok ? 'sí funciona (lectura rápida)' : 'no, una PID por vez'} → ${lines.join(' | ')}`);
+    $('dMulti').textContent = ok ? 'sí (varias PIDs por consulta)' : 'no (una PID por consulta)';
+    return ok;
+  } catch (e) {
+    log('Consulta múltiple: ' + e.message);
+    $('dMulti').textContent = 'no';
+    return false;
+  }
 }
 
 function dropPid(pid) {
@@ -241,6 +265,28 @@ async function loop() {
   while (running) {
     const s = {};
     const list = cycle++ % 8 === 0 ? [...pollList, ...slowList] : [...pollList];
+    if (multi) {
+      // Hasta 6 PIDs por consulta: una sola ida y vuelta por Bluetooth.
+      for (let i = 0; i < list.length && running; i += 6) {
+        const chunk = list.slice(i, i + 6);
+        try {
+          const vals = parseMulti(await elm.send('01' + chunk.join(''), 2500), chunk);
+          for (const pid of chunk) {
+            if (vals[pid] != null) { s[PIDS[pid].key] = vals[pid]; noData[pid] = 0; } else noData[pid] = (noData[pid] || 0) + 1;
+          }
+          rate.n += chunk.length;
+        } catch (e) {
+          log(`multi ${chunk.join(',')}: ${e.message}`);
+        }
+      }
+      if (s.rpm == null && (noData['0C'] || 0) >= 3) {
+        multi = false;
+        log('Las consultas múltiples dejaron de responder: vuelvo a una PID por consulta');
+      }
+      if (!running) return;
+      process(s);
+      continue;
+    }
     for (const pid of list) {
       if (!running) return;
       try {
@@ -265,6 +311,13 @@ function process(s) {
   const dt = lastTs ? (now - lastTs) / 1000 : 0;
   lastTs = now;
   Object.assign(live, s);
+  if (s.rpm == null) {
+    // Sin RPM: motor apagado o la ECU no responde. No se cuenta ni se graba.
+    if (++noRpm >= 3) renderNoEngine();
+    lastTs = 0;
+    return;
+  }
+  noRpm = 0;
   // Los PIDs lentos (temperatura, carga) se leen cada pocos ciclos: usar el último valor.
   for (const k of ['iat', 'load', 'fuelSys']) if (s[k] == null && live[k] != null) s[k] = live[k];
 
@@ -309,7 +362,8 @@ function process(s) {
   if (!adv && (s.rpm ?? 0) > V.power.max) adv = powerAdvice({ ...s, gear }, gears, cfg.nGears, cfg.loaded, V.power);
   if (!adv) {
     adv = advise({ ...s, throttle: pedal, lph, gear, fuelCut }, zone, gears, cfg.nGears, {
-      lugRpm: V.lugRpm, upMinRpm: V.upMinRpm, idleRpm: V.idleRpm, redMargin: V.fuel === 'diesel' ? 400 : 600,
+      lugRpm: V.lugRpm, upMinRpm: V.upMinRpm, idleRpm: V.idleRpm,
+      redMargin: V.fuel === 'diesel' ? 400 : 600, redMarginTop: V.fuel === 'diesel' ? 600 : 1200,
     });
   }
 
@@ -330,11 +384,15 @@ function process(s) {
   if (now - lastSave > 10000) save();
 }
 
+// Zona para aconsejar: la aprendida de esa marcha (si es confiable) o la de fábrica.
+// La zona "general" (todas las marchas juntas) solo se muestra: mezclar marchas confunde
+// RPM con velocidad.
+function defaultZone(gear) {
+  return gear && gear === cfg.nGears ? V.ecoTop : V.eco;
+}
 function zoneFor(gear) {
-  const gz = gear ? stats.zone(gear) : null;
-  if (gz?.learned) return gz;
-  if (gear && gear === cfg.nGears) return { ...V.ecoTop, learned: false };
-  return stats.zone(0, 0.9, { ...V.eco, learned: false });
+  const gz = gear ? stats.zone(gear, 0.9, defaultZone(gear)) : null;
+  return gz?.learned ? gz : { ...defaultZone(gear), learned: false };
 }
 
 const r1 = (v) => (v == null ? '' : Math.round(v * 10) / 10);
@@ -405,13 +463,33 @@ function render(s, d) {
 }
 const fmt = (v) => (v == null ? '--' : Math.round(v));
 
+function renderNoEngine() {
+  $('lamp').className = 'lamp off';
+  $('kmL').textContent = '--';
+  $('kmLUnit').textContent = 'km/L';
+  $('advice').textContent = 'Motor apagado o sin respuesta';
+  $('advice').className = 'advice';
+  $('rpm').textContent = '--';
+  $('speed').textContent = '--';
+  $('gear').textContent = '-';
+  $('modeBadge').hidden = true;
+}
+
 function renderZoneTab() {
   const rows = stats.rows(0).filter((r) => r.rpm >= 500 && r.rpm < 5500 && r.kmL);
-  const z = stats.zone(0);
+  const z = stats.zone(0, 0.9, V.eco);
   const mins = Math.round(stats.totalSeconds() / 60);
+  const used = stats.rows(0).filter((r) => r.t >= MIN_BUCKET_SECONDS && r.kmL);
+  const span = used.length ? `${used[0].rpm}–${used[used.length - 1].rpm + BUCKET} rpm` : '';
+  const why = {
+    pocos: `Maneja normal: necesito al menos ${MIN_BUCKET_SECONDS} s a velocidad pareja en 4 rangos de RPM distintos.`,
+    rango: `Hasta ahora casi todo fue en ${span}. Para comparar necesito datos en más rangos (ciudad, caminos a 60–80 km/h).`,
+    parejo: `En los rangos que manejaste (${span}) el rendimiento fue parecido (±10 %), así que los datos todavía no muestran una zona mejor.`,
+    borde: `El mejor rendimiento quedó en el rango más alto medido (${span}): el óptimo podría estar fuera, necesito más datos.`,
+  }[z.reason] || '';
   $('zoneSummary').innerHTML = z.learned
-    ? `Tu camioneta rinde mejor entre <b>${z.min} y ${z.max} rpm</b>. El mejor rango fue ${z.bestRpm}–${z.bestRpm + BUCKET} rpm con <b>${z.best.toFixed(1)} km/L</b>. (${mins} min de datos)`
-    : `Aún aprendiendo (${mins} min de datos). Mientras tanto uso 1500–2500 rpm. Maneja normal: necesito al menos ${MIN_BUCKET_SECONDS} s en 3 rangos distintos.`;
+    ? `Tu ${V.short} rinde mejor entre <b>${z.min} y ${z.max} rpm</b>. El mejor rango fue ${z.bestRpm}–${z.bestRpm + BUCKET} rpm con <b>${z.best.toFixed(1)} km/L</b>. (${mins} min de datos)`
+    : `Aún aprendiendo (${mins} min de datos). Mientras tanto uso la zona recomendada: <b>${V.eco.min}–${V.eco.max} rpm</b> (en ${gearName(cfg.nGears)} hasta ${V.ecoTop.max}). ${why}`;
 
   const chart = $('chart');
   chart.innerHTML = '';

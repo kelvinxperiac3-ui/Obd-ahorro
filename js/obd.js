@@ -63,3 +63,35 @@ export async function readSupported(elm) {
   }
   return all;
 }
+
+/**
+ * Respuesta a una consulta con varias PIDs (ej. "010C0D0B"): "41 0C a b 0D a 0B a".
+ * En CAN puede venir en varias tramas numeradas ("00A", "0: 41 0C ...", "1: ...").
+ * Devuelve { pid: valor } con las que se pudieron leer.
+ */
+export function parseMulti(lines, pids) {
+  const numbered = lines.some((l) => /^[0-9A-F]:/i.test(l.trim()));
+  let hex = '';
+  for (const raw of lines) {
+    const l = raw.trim();
+    if (numbered && /^[0-9A-F]{3}$/i.test(l.replace(/\s/g, ''))) continue; // largo total
+    hex += l.replace(/^[0-9A-F]:/i, '').replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
+  }
+  const out = {};
+  let i = hex.indexOf('41');
+  while (i >= 0 && i % 2) i = hex.indexOf('41', i + 1);
+  if (i < 0) return out;
+  i += 2;
+  const want = new Set(pids.map((p) => p.toUpperCase()));
+  while (i + 2 <= hex.length) {
+    const pid = hex.substr(i, 2);
+    const def = PIDS[pid];
+    if (!def || !want.has(pid) || i + 2 + def.n * 2 > hex.length) break;
+    const bytes = [];
+    for (let k = 0; k < def.n; k++) bytes.push(parseInt(hex.substr(i + 2 + k * 2, 2), 16));
+    out[pid] = def.f(bytes);
+    want.delete(pid);
+    i += 2 + def.n * 2;
+  }
+  return out;
+}
