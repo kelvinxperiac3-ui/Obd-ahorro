@@ -1,6 +1,7 @@
 // Definiciones de PIDs del modo 01 y su decodificación.
 
 export const PIDS = {
+  '03': { key: 'fuelSys', n: 1, f: ([a]) => a }, // 4 = lazo abierto por desaceleración (corte)
   '04': { key: 'load', n: 1, f: ([a]) => (a * 100) / 255 },
   '05': { key: 'coolant', n: 1, f: ([a]) => a - 40 },
   '0B': { key: 'map', n: 1, f: ([a]) => a },

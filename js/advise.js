@@ -30,7 +30,7 @@ export function advise(s, zone, gears, nGears) {
   if (s.rpm > zone.max) {
     const color = s.rpm > zone.max + 600 ? 'red' : 'yellow';
     if (up && up >= Math.max(1300, zone.min - 300)) return { color, msg: `Sube a ${gearName(g + 1)}`, shift: g + 1 };
-    if (g === nGears || (gears && gears.learned >= nGears && g === gears.learned)) return { color, msg: 'RPM altas: baja la velocidad' };
+    if (g === nGears) return { color, msg: 'Más rápido = más consumo' };
     return { color, msg: 'RPM altas' };
   }
 

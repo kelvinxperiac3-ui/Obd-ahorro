@@ -57,7 +57,13 @@
       <h2>Tu zona verde</h2>
       <p id="zoneSummary" class="lead">Aún no hay datos.</p>
       <div class="chart" id="chart"></div>
-      <p class="hint">Barras = km/L promedio en cada rango de RPM (todas las marchas). Verde = zona recomendada. Se necesita al menos 30 s en un rango para contarlo.</p>
+      <p class="hint">Barras = km/L promedio en cada rango de RPM, solo a velocidad pareja (sin acelerar ni frenar). Verde = zona recomendada. Un rango cuenta cuando tiene al menos 30 s de datos.</p>
+
+      <h3>¿Qué marcha conviene a cada velocidad?</h3>
+      <table class="gtable">
+        <thead><tr><th>km/h</th><th>Rendimiento a velocidad pareja (en negrita, la mejor)</th></tr></thead>
+        <tbody id="speedRows"><tr><td colspan="2">Sin datos todavía.</td></tr></tbody>
+      </table>
 
       <h3>Por marcha</h3>
       <table class="gtable">
@@ -68,6 +74,8 @@
       <div class="row-btns">
         <button id="btnCsv" class="btn">Exportar viaje (CSV)</button>
         <button id="btnJson" class="btn">Exportar datos (JSON)</button>
+        <label class="btn" for="fileImport">Importar registro de Car Scanner</label>
+        <input id="fileImport" type="file" accept=".csv,text/csv,text/plain" hidden>
         <button id="btnWipe" class="btn danger">Borrar lo aprendido</button>
       </div>
     </section>
@@ -88,6 +96,13 @@
       <label class="field">Marchas de la caja
         <input id="cfgGears" type="number" min="4" max="6" step="1">
       </label>
+      <label class="field">Relaciones de marcha (km/h a 1000 rpm, de 1ª a última)
+        <input id="cfgRatios" inputmode="decimal" placeholder="vacío = aprender solas">
+      </label>
+      <div class="row-btns tight">
+        <button id="btnMd201" class="btn small" type="button">Usar las de la MD201</button>
+        <button id="btnLearned" class="btn small" type="button">Usar las detectadas</button>
+      </div>
       <label class="check"><input id="cfgVoice" type="checkbox"> Avisos por voz (“Sube a 3ª”)</label>
       <label class="check"><input id="cfgDfco" type="checkbox"> Detectar freno motor (consumo 0 al soltar el acelerador en marcha)</label>
       <label class="field">Eficiencia volumétrica (solo si el motor no tiene MAF)

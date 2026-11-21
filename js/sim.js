@@ -1,7 +1,9 @@
-// Simulador: se comporta como un ELM327 conectado a una camioneta 1.2 manual de 5 marchas.
+// Simulador: se comporta como un ELM327 conectado a una Changan MD201 1.2 manual de 5 marchas
+// (sin sensor MAF: informa MAP, como la camioneta real).
 // Sirve para probar la app sin estar en el vehículo.
 
-const RATIOS = [7.2, 12.8, 19.5, 26.5, 33.0]; // km/h por 1000 rpm en cada marcha
+import { MD201_RATIOS as RATIOS } from './gears.js';
+import { mafFromMap } from './fuel.js';
 const PROFILE = [ // [segundos, velocidad objetivo km/h]
   [0, 0], [4, 0], [20, 45], [40, 50], [55, 80], [85, 85], [100, 35], [120, 40], [132, 0], [138, 0],
 ];
@@ -66,8 +68,10 @@ export class SimTransport {
     let fuelGs;
     if (P < 0 && this.rpm > 1200 && !clutch) {
       fuelGs = 0; // corte de inyección
+      this.cut = true;
       this.thr = 11;
     } else {
+      this.cut = false;
       const r = (this.rpm - 1900) / 1000;
       const bsfc = 255 * (1 + 0.18 * r * r + 0.9 * (1 - frac) ** 2); // g/kWh
       const friction = (this.rpm / 1000) * 0.9; // kW de pérdidas
@@ -91,7 +95,7 @@ export class SimTransport {
     if (cmd === 'ATDPN') return 'A6';
     if (cmd.startsWith('AT')) return 'OK';
     switch (cmd) {
-      case '0100': return '4100BE3FB813';
+      case '0100': return '4100BE3EB813'; // sin 0110 (MAF)
       case '0120': return '412080018001';
       case '0140': return '4140FED00400';
       case '010C': return '410C' + hex(this.rpm * 4, 4);
@@ -100,7 +104,11 @@ export class SimTransport {
       case '0104': return '4104' + hex((this.load * 255) / 100);
       case '0111': return '4111' + hex((this.thr * 255) / 100);
       case '010F': return '410F' + hex(32 + 40);
-      case '010B': return '410B' + hex(35 + this.load * 0.6);
+      case '010B': { // MAP coherente con el aire que entra
+        const per = mafFromMap(this.rpm, 1, 32, 1.243, 0.85);
+        return '410B' + hex(Math.min(101, Math.max(18, this.maf / per)));
+      }
+      case '0103': return '4103' + (this.cut ? '04' : '02') + '00';
       case '0105': return '4105' + hex(88 + 40);
       default: return 'NO DATA';
     }

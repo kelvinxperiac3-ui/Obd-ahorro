@@ -131,3 +131,8 @@ main { flex: 1; overflow-y: auto; }
   position: fixed; left: 16px; right: 16px; bottom: calc(76px + env(safe-area-inset-bottom));
   background: #262b33; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: .9rem;
 }
+
+.row-btns.tight { margin-top: 4px; }
+label.btn { display: inline-block; }
+.gtable small { color: var(--muted); }
+.gtable b.ok { color: var(--green); }

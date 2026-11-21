@@ -3,8 +3,10 @@ import { SimTransport } from './sim.js';
 import { Elm327 } from './elm327.js';
 import { PIDS, decode, readSupported } from './obd.js';
 import { DEFAULT_ENGINE, fuelLph, kmPerL } from './fuel.js';
-import { GearLearner } from './gears.js';
-import { RpmStats, BUCKET, MIN_BUCKET_SECONDS } from './stats.js';
+import { GearLearner, MD201_RATIOS } from './gears.js';
+import { RpmStats, BUCKET, MIN_BUCKET_SECONDS, DEFAULT_TOP_ZONE } from './stats.js';
+import { Analyzer } from './analyzer.js';
+import { parseCarScanner } from './import.js';
 import { advise, gearName } from './advise.js';
 
 const $ = (id) => document.getElementById(id);
@@ -22,10 +24,12 @@ const cfg = Object.assign({
   voice: true,
   dfco: true,
   corr: 1,
+  gearRatios: MD201_RATIOS,
 }, store.get('cfg', {}));
 
-let gears = new GearLearner(cfg.nGears, store.get('gears', null));
+let gears = new GearLearner(cfg.nGears, store.get('gears', null), cfg.gearRatios);
 let stats = new RpmStats(store.get('stats', null));
+let analyzer = new Analyzer(gears, stats);
 let idleThrottle = store.get('idleThr', 100);
 
 // ---------- estado ----------
@@ -33,6 +37,8 @@ let transport = null;
 let elm = null;
 let running = false;
 let pollList = [];
+let slowList = [];
+let cycle = 0;
 let noData = {};
 let lastTs = 0;
 let lastSave = 0;
@@ -125,23 +131,31 @@ function setConn(state, name) {
 function buildPollList(sup) {
   const has = (p) => sup.size === 0 || sup.has(p);
   pollList = ['0C', '0D'];
+  slowList = [];
   if (sup.has('5E')) pollList.push('5E');
-  if (has('10')) pollList.push('10');
-  else { if (sup.has('0B')) pollList.push('0B'); if (sup.has('0F')) pollList.push('0F'); }
-  if (has('04')) pollList.push('04');
+  if (sup.has('10')) pollList.push('10');
+  else if (has('0B')) { pollList.push('0B'); slowList.push('0F'); } // la MD201 no tiene MAF: usa MAP
   if (has('11')) pollList.push('11');
+  if (sup.has('03')) pollList.push('03');
+  if (has('04')) slowList.push('04');
   noData = {};
-  $('dPids').textContent = pollList.map((p) => '01' + p).join(' ');
+  showPids();
 }
 
 function dropPid(pid) {
   pollList = pollList.filter((p) => p !== pid);
+  slowList = slowList.filter((p) => p !== pid);
   log(`01${pid} no responde, lo dejo de pedir`);
   if (pid === '10' && !pollList.includes('0B')) {
-    pollList.push('0B', '0F');
+    pollList.push('0B');
+    slowList.push('0F');
     log('Sin MAF: calculo con MAP + temperatura de admisión');
   }
-  $('dPids').textContent = pollList.map((p) => '01' + p).join(' ');
+  showPids();
+}
+
+function showPids() {
+  $('dPids').textContent = pollList.map((p) => '01' + p).join(' ') + (slowList.length ? ' · lentos: ' + slowList.map((p) => '01' + p).join(' ') : '');
 }
 
 async function keepAwake() {
@@ -153,7 +167,8 @@ document.addEventListener('visibilitychange', () => { if (running && document.vi
 async function loop() {
   while (running) {
     const s = {};
-    for (const pid of [...pollList]) {
+    const list = cycle++ % 8 === 0 ? [...pollList, ...slowList] : [...pollList];
+    for (const pid of list) {
       if (!running) return;
       try {
         const lines = await elm.send('01' + pid, 2000);
@@ -177,6 +192,8 @@ function process(s) {
   const dt = lastTs ? (now - lastTs) / 1000 : 0;
   lastTs = now;
   Object.assign(live, s);
+  // Los PIDs lentos (temperatura, carga) se leen cada pocos ciclos: usar el último valor.
+  for (const k of ['iat', 'load', 'fuelSys']) if (s[k] == null && live[k] != null) s[k] = live[k];
 
   if (s.throttle != null && s.rpm != null && s.rpm < 1100 && (s.speed ?? 0) < 3) {
     idleThrottle = Math.min(idleThrottle, s.throttle);
@@ -185,20 +202,17 @@ function process(s) {
   const f = fuelLph(s, { ...DEFAULT_ENGINE, displacement: cfg.displacement, ve: cfg.ve });
   let lph = f ? f.lph * cfg.corr : null;
   let fuelCut = false;
-  if (cfg.dfco && f && f.method !== 'ECU (015E)' && s.throttle != null && idleThrottle < 100 &&
-      s.throttle <= idleThrottle + 1.5 && (s.rpm ?? 0) > 1300 && (s.speed ?? 0) > 15) {
-    lph = 0; fuelCut = true;
+  if (cfg.dfco && f && f.method !== 'ECU (015E)' && (s.speed ?? 0) > 10 && (s.rpm ?? 0) > 1100) {
+    // Corte de inyección: la ECU lo informa en 0103 (= 4) o, si no, acelerador en reposo.
+    const thrIdle = s.throttle != null && idleThrottle < 100 && s.throttle <= idleThrottle + 1.5;
+    if ((s.fuelSys === 4 && (s.throttle == null || thrIdle)) || (s.fuelSys == null && thrIdle && s.rpm > 1300)) {
+      lph = 0; fuelCut = true;
+    }
   }
   if (f) $('dMethod').textContent = f.method + (cfg.corr !== 1 ? ` ×${cfg.corr}` : '');
 
-  if (s.speed != null && s.rpm != null) gears.add(s.speed, s.rpm);
-  const gear = gears.gearFor(s.speed, s.rpm);
-  // Para la zona solo cuentan momentos con el motor empujando y en una marcha conocida
-  // (el freno motor da km/L "infinito" y el embrague pisado no dice nada de las RPM).
-  if (!fuelCut && (gear || gears.learned < 3)) stats.add({ rpm: s.rpm, speed: s.speed, lph, gear, dt });
-
-  const gz = gear ? stats.zone(gear) : null;
-  const zone = gz?.learned ? gz : stats.zone(0);
+  const { gear } = analyzer.feed({ t: now / 1000, rpm: s.rpm, speed: s.speed, lph, fuelCut });
+  const zone = zoneFor(gear);
   const adv = advise({ ...s, lph, gear, fuelCut }, zone, gears, cfg.nGears);
 
   if (dt > 0 && dt < 5) {
@@ -216,6 +230,13 @@ function process(s) {
   render(s, { lph, kml, gear, zone, adv, method: f?.method });
   speak(adv);
   if (now - lastSave > 10000) save();
+}
+
+function zoneFor(gear) {
+  const gz = gear ? stats.zone(gear) : null;
+  if (gz?.learned) return gz;
+  if (gear && gear === cfg.nGears) return { ...DEFAULT_TOP_ZONE };
+  return stats.zone(0);
 }
 
 const r1 = (v) => (v == null ? '' : Math.round(v * 10) / 10);
@@ -302,17 +323,36 @@ function renderZoneTab() {
     chart.appendChild(col);
   }
   if (!rows.length) chart.innerHTML = '<p class="hint">Sin datos todavía.</p>';
+  renderSpeedTab();
 
   const tb = $('gearRows');
   tb.innerHTML = '';
   if (!gears.learned) { tb.innerHTML = '<tr><td colspan="4">Aprendiendo las marchas… maneja unos minutos.</td></tr>'; return; }
-  gears.peaks.forEach((p, i) => {
-    const g = i + 1;
+  for (let g = 1; g <= cfg.nGears; g++) {
+    const p = gears.ratioOf(g);
+    if (p == null) continue;
     const gz = stats.zone(g);
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${gearName(g)}</td><td>${p.toFixed(1)}</td><td>${gz.learned ? `${gz.min}–${gz.max}` : '—'}</td><td>${gz.learned ? gz.best.toFixed(1) : '—'}</td>`;
     tb.appendChild(tr);
-  });
+  }
+}
+
+function renderSpeedTab() {
+  const tb = $('speedRows');
+  const rows = stats.bySpeed();
+  tb.innerHTML = rows.length ? '' : '<tr><td colspan="2">Sin datos todavía.</td></tr>';
+  for (const r of rows) {
+    const best = r.gears.reduce((a, b) => (b.kmL > a.kmL ? b : a));
+    const tr = document.createElement('tr');
+    const cells = r.gears.map((g) => {
+      const rpm = gears.rpmInGear(r.band + 5, g.gear);
+      const txt = `${gearName(g.gear)}: ${g.kmL.toFixed(1)} km/L${rpm ? ` <small>(~${Math.round(rpm / 50) * 50} rpm)</small>` : ''}`;
+      return g === best && r.gears.length > 1 ? `<b class="ok">${txt}</b>` : txt;
+    });
+    tr.innerHTML = `<td>${r.band}–${r.band + 10}</td><td>${cells.join('<br>')}</td>`;
+    tb.appendChild(tr);
+  }
 }
 
 // ---------- exportar ----------
@@ -334,11 +374,45 @@ $('btnJson').onclick = () => {
 };
 $('btnWipe').onclick = () => {
   if (!confirm('¿Borrar todo lo aprendido (zonas y marchas)?')) return;
-  gears = new GearLearner(cfg.nGears);
+  gears = new GearLearner(cfg.nGears, null, cfg.gearRatios);
   stats = new RpmStats();
+  analyzer = new Analyzer(gears, stats);
   save(true);
   toast('Datos borrados');
 };
+$('btnMd201').onclick = () => { $('cfgRatios').value = MD201_RATIOS.join(', '); saveCfg(); toast('Marchas de la MD201 cargadas'); };
+$('btnLearned').onclick = () => {
+  const d = gears.detect();
+  if (d.length < 3) { toast('Todavía no hay suficientes datos para detectar las marchas'); return; }
+  $('cfgRatios').value = d.map((x) => x.toFixed(1)).join(', ');
+  saveCfg();
+  toast(`Marchas detectadas: ${d.length}`);
+};
+
+// ---------- importar Car Scanner ----------
+$('fileImport').onchange = async (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    toast('Leyendo archivo…', 20000);
+    const rows = parseCarScanner(await file.text());
+    const an = new Analyzer(gears, stats);
+    let n = 0; let km = 0; let l = 0;
+    for (const r of rows) {
+      const fuelCut = r.eco === 0 || r.lph === 0;
+      const lph = r.lph != null ? r.lph * cfg.corr : null;
+      const { dt } = an.feed({ t: r.t, rpm: r.rpm, speed: r.speed, lph, fuelCut });
+      if (dt > 0 && dt < 5 && r.speed != null && lph != null) { km += (r.speed * dt) / 3600; l += (lph * dt) / 3600; n++; }
+    }
+    save(true);
+    toast(`Importado: ${rows.length} lecturas, ${km.toFixed(1)} km, ${l.toFixed(2)} L (${(km / l).toFixed(1)} km/L)`, 7000);
+    log(`Importado ${file.name}: ${rows.length} lecturas, ${km.toFixed(1)} km, ${l.toFixed(2)} L`);
+  } catch (err) {
+    toast('No pude importar: ' + err.message, 7000);
+  }
+};
+
 $('btnTripReset').onclick = () => { Object.assign(trip, newTrip()); tripLog.length = 0; };
 
 // ---------- ajustes ----------
@@ -352,6 +426,7 @@ function loadCfgForm() {
   $('cfgDfco').checked = cfg.dfco;
   $('cfgVe').value = cfg.ve;
   $('cfgCorr').value = cfg.corr;
+  $('cfgRatios').value = (cfg.gearRatios || []).join(', ');
 }
 function saveCfg() {
   const eng = $('cfgEngine').value;
@@ -363,9 +438,13 @@ function saveCfg() {
   cfg.dfco = $('cfgDfco').checked;
   cfg.ve = Number($('cfgVe').value) || DEFAULT_ENGINE.ve;
   cfg.corr = Number($('cfgCorr').value) || 1;
+  const ratios = $('cfgRatios').value.split(/[,;\s]+/).map(Number).filter((x) => x > 1 && x < 80);
+  cfg.gearRatios = ratios.length ? ratios : null;
+  gears.preset = cfg.gearRatios ? [...cfg.gearRatios].sort((a, b) => a - b) : null;
+  gears._recompute();
   store.set('cfg', cfg);
 }
-for (const id of ['cfgEngine', 'cfgDisp', 'cfgGears', 'cfgVoice', 'cfgDfco', 'cfgVe', 'cfgCorr']) $(id).addEventListener('change', saveCfg);
+for (const id of ['cfgEngine', 'cfgDisp', 'cfgGears', 'cfgVoice', 'cfgDfco', 'cfgVe', 'cfgCorr', 'cfgRatios']) $(id).addEventListener('change', saveCfg);
 
 $('cmdForm').onsubmit = async (e) => {
   e.preventDefault();
