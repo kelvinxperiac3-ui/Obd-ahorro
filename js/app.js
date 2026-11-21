@@ -10,9 +10,10 @@ import { Analyzer } from './analyzer.js';
 import { parseCarScanner } from './import.js';
 import { HillDetector, powerAdvice, pedalPct } from './power.js';
 import { advise, gearName } from './advise.js';
+import { newTank, addDriving, registerFill, undoFill, suggestedFactor } from './tank.js';
 
 const $ = (id) => document.getElementById(id);
-export const APP_VERSION = '2026-11-22a';
+export const APP_VERSION = '2026-11-22b';
 
 // ---------- persistencia (localStorage protegido) ----------
 const store = {
@@ -40,6 +41,7 @@ let gears;
 let stats;
 let analyzer;
 let idleThrottle;
+let tank; // consumo real (tanque lleno a tanque lleno)
 let fullThrottle; // pedal/mariposa máxima vista (la MD201 llega a ~82 %)
 
 function loadVehicle(id) {
@@ -60,6 +62,7 @@ function loadVehicle(id) {
   gears = new GearLearner(cfg.nGears, store.get(`gears.${V.id}`, null), cfg.gearRatios);
   stats = new RpmStats(store.get(`stats.${V.id}`, null));
   analyzer = new Analyzer(gears, stats);
+  tank = Object.assign(newTank(), store.get(`tank.${V.id}`, {}));
   idleThrottle = store.get(`idleThr.${V.id}`, 100);
   fullThrottle = store.get(`fullThr.${V.id}`, 0);
 }
@@ -519,6 +522,9 @@ function process(s) {
   }
 
   if (dt > 0 && dt < 5) {
+    // Para el consumo real: km y litros estimados SIN el factor de corrección.
+    const rawLph = f ? (fuelCut ? 0 : f.lph) : null;
+    if (s.speed != null && rawLph != null) addDriving(tank, (s.speed * dt) / 3600, (rawLph * dt) / 3600);
     if (s.speed != null) trip.km += (s.speed * dt) / 3600;
     if (lph != null) trip.l += (lph * dt) / 3600;
     trip.t += dt;
@@ -567,6 +573,7 @@ function save(force) {
   lastSave = performance.now();
   store.set(`gears.${V.id}`, gears.toJSON());
   store.set(`stats.${V.id}`, stats.toJSON());
+  store.set(`tank.${V.id}`, tank);
   store.set(`idleThr.${V.id}`, idleThrottle);
   store.set(`fullThr.${V.id}`, fullThrottle);
   if (force) renderZoneTab();
@@ -801,6 +808,99 @@ $('fileImport').onchange = async (e) => {
   }
 };
 
+// ---------- tanque: consumo real ----------
+const fmtDate = (iso) => new Date(iso).toLocaleDateString('es', { day: 'numeric', month: 'short' });
+const WARN_TEXT = {
+  litros: 'Faltan los litros cargados.',
+  corto: 'Tramo corto (menos de 50 km): el corte de la bomba tiene ±1 L de error, así que el resultado puede variar mucho. Mejor esperar medio estanque.',
+  cobertura: 'La app midió solo parte de los km (manejaste un tramo sin conectarla). El km/L real es correcto, pero el factor es menos confiable.',
+  sinDatos: 'La app no registró consumo en este período, así que no hay con qué comparar.',
+};
+
+function renderTankTab() {
+  const p = tank.period;
+  if (!p) {
+    $('tankStatus').innerHTML = `<b>Paso 1:</b> llena el estanque del ${V.short} hasta el corte y toca <b>Registrar carga</b>. La primera vez no hace falta poner litros.`;
+  } else {
+    const est = p.rawL > 0.05 ? ` (${(p.km / p.rawL).toFixed(1)} km/L estimado sin corrección)` : '';
+    $('tankStatus').innerHTML = `Midiendo desde el <b>${fmtDate(p.start)}</b>${p.odoStart != null ? ` (odómetro ${p.odoStart} km)` : ''}: ` +
+      `<b>${p.km.toFixed(1)} km</b> con la app y <b>${p.rawL.toFixed(2)} L</b> estimados${est}.` +
+      (tank.pendingL ? ` Cargas parciales: ${tank.pendingL.toFixed(2)} L.` : '') +
+      ' Cuando vuelvas a llenar hasta el corte, anota los litros de la bomba.';
+  }
+  $('fillL').placeholder = p ? 'ej. 32.5' : 'no hace falta la primera vez';
+  $('btnUndoFill').hidden = !tank.undo;
+
+  const sf = suggestedFactor(tank.history);
+  if (sf) {
+    $('factorInfo').innerHTML = `Factor sugerido: <b>${sf.factor.toFixed(3)}</b> (promedio de ${sf.n} carga${sf.n > 1 ? 's' : ''}). ` +
+      `Factor actual: <b>${cfg.corr}</b>. ${sf.factor > 1 ? 'La app estaba marcando menos consumo del real.' : 'La app estaba marcando más consumo del real.'}`;
+    $('btnApplyFactor').hidden = Math.abs(sf.factor - cfg.corr) < 0.005;
+    $('btnApplyFactor').textContent = `Aplicar factor ${sf.factor.toFixed(3)}`;
+    $('btnApplyFactor').dataset.f = sf.factor;
+  } else {
+    $('factorInfo').textContent = `Factor actual: ${cfg.corr}. Se calculará con tu primera carga completa confiable (50 km o más).`;
+    $('btnApplyFactor').hidden = true;
+  }
+
+  const tb = $('fillRows');
+  tb.innerHTML = tank.history.length ? '' : '<tr><td colspan="6">Sin cargas completas todavía.</td></tr>';
+  for (const h of tank.history) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${fmtDate(h.date)}</td><td>${h.km}${h.odoKm ? '' : '*'}</td><td>${h.liters}</td>` +
+      `<td><b>${h.realKmL ?? '—'}</b></td><td>${h.appKmL ?? '—'}</td><td>${h.factor ?? '—'}${h.warnings.length ? ' ⚠' : ''}</td>`;
+    tb.appendChild(tr);
+  }
+}
+
+function showFillResult(r) {
+  const box = $('fillResult');
+  if (r.type === 'start') {
+    box.innerHTML = '<div class="result"><big>¡Listo!</big><p>Empecé a medir. Maneja normal con la app conectada y registra la próxima carga hasta el corte.</p></div>';
+    return;
+  }
+  if (r.type === 'partial') {
+    box.innerHTML = r.ignored
+      ? '<div class="result warn"><p>Carga parcial ignorada: todavía no hay una carga hasta el corte para empezar a medir.</p></div>'
+      : `<div class="result"><p>Carga parcial anotada: ${r.liters} L. Se sumarán a la próxima carga completa (pendiente: ${r.pendingL.toFixed(2)} L).</p></div>`;
+    return;
+  }
+  const warn = r.warnings.map((w) => `<p>⚠ ${WARN_TEXT[w]}</p>`).join('');
+  const diff = r.factor ? Math.round((r.factor - 1) * 100) : null;
+  box.innerHTML = `<div class="result${r.warnings.length ? ' warn' : ''}">
+    <p>Consumo real del ${V.short}</p>
+    <big>${r.realKmL ?? '—'} km/L</big>
+    <p>${r.km} km${r.odoKm ? ' (odómetro)' : ' (medidos por la app)'} con ${r.liters} L.</p>
+    ${r.factor ? `<p>La app estimó ${r.rawL} L para ${r.appKm} km (${r.appKmL} km/L): ${diff === 0 ? 'casi exacto' : `${Math.abs(diff)} % ${diff > 0 ? 'menos' : 'más'} de lo real`}. Factor de esta carga: <b>${r.factor}</b>.</p>` : ''}
+    ${warn}
+  </div>`;
+}
+
+$('btnFill').onclick = () => {
+  const liters = $('fillL').value;
+  const full = $('fillFull').checked;
+  if (tank.period && !(Number(liters) > 0)) { toast('Anota los litros que cargaste (los marca la bomba)'); return; }
+  const r = registerFill(tank, { liters, odo: $('fillOdo').value, full });
+  save();
+  $('fillL').value = '';
+  $('fillOdo').value = '';
+  $('fillFull').checked = true;
+  showFillResult(r);
+  renderTankTab();
+  log(`Carga registrada: ${r.type}${r.liters ? ` ${r.liters} L` : ''}${r.realKmL ? ` → ${r.realKmL} km/L real, factor ${r.factor}` : ''}`);
+};
+$('btnUndoFill').onclick = () => {
+  if (!confirm('¿Deshacer la última carga registrada?')) return;
+  if (undoFill(tank)) { save(); $('fillResult').innerHTML = ''; renderTankTab(); toast('Carga deshecha'); }
+};
+$('btnApplyFactor').onclick = () => {
+  cfg.corr = Number($('btnApplyFactor').dataset.f);
+  saveVehicleCfg();
+  loadCfgForm();
+  renderTankTab();
+  toast(`Factor ${cfg.corr} aplicado: desde ahora los km/L se muestran corregidos`);
+};
+
 function showVoice() {
   const b = $('btnVoice');
   b.textContent = cfg.voice ? '🔊' : '🔇';
@@ -859,6 +959,8 @@ $('vehicleSel').onchange = (e) => {
   loadCfgForm();
   showLoaded();
   renderZoneTab();
+  renderTankTab();
+  $('fillResult').innerHTML = '';
   toast(`Vehículo: ${V.name}`);
 };
 
@@ -918,6 +1020,7 @@ document.querySelectorAll('.tabs button').forEach((b) => {
     document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('active', x === b));
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.id === 'tab-' + b.dataset.tab));
     if (b.dataset.tab === 'zone') renderZoneTab();
+    if (b.dataset.tab === 'tank') renderTankTab();
   };
 });
 
@@ -928,6 +1031,7 @@ $('dVersion').textContent = APP_VERSION;
 loadCfgForm();
 setGauge();
 renderZoneTab();
+renderTankTab();
 if (!BleTransport.available()) log('Web Bluetooth no disponible en este navegador. Usa Chrome en Android.');
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {

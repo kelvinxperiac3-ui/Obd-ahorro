@@ -89,6 +89,48 @@
       </div>
     </section>
 
+    <!-- TANQUE -->
+    <section id="tab-tank" class="tab">
+      <h2>Consumo real</h2>
+      <p class="lead" id="tankStatus"></p>
+
+      <div class="card">
+        <h3>⛽ Registrar carga</h3>
+        <label class="field">Litros cargados (lo que marca la bomba)
+          <input id="fillL" type="number" inputmode="decimal" step="0.01" min="0" placeholder="ej. 32.5">
+        </label>
+        <label class="field">Odómetro en km (opcional, mejora la precisión)
+          <input id="fillOdo" type="number" inputmode="numeric" step="1" min="0" placeholder="ej. 48210">
+        </label>
+        <label class="check"><input id="fillFull" type="checkbox" checked> Llené hasta el corte de la pistola</label>
+        <div class="row-btns tight">
+          <button id="btnFill" class="btn primary" type="button">Registrar carga</button>
+          <button id="btnUndoFill" class="btn ghost small" type="button">Deshacer la última</button>
+        </div>
+      </div>
+
+      <div id="fillResult"></div>
+
+      <h3>Factor de corrección</h3>
+      <p id="factorInfo" class="hint"></p>
+      <button id="btnApplyFactor" class="btn" type="button" hidden>Aplicar</button>
+
+      <h3>Historial de cargas</h3>
+      <table class="gtable">
+        <thead><tr><th>Fecha</th><th>km</th><th>Litros</th><th>km/L real</th><th>Estimado</th><th>Factor</th></tr></thead>
+        <tbody id="fillRows"><tr><td colspan="6">Sin cargas completas todavía.</td></tr></tbody>
+      </table>
+
+      <h3>Cómo hacerlo bien</h3>
+      <ol class="hint steps">
+        <li>Llena <b>hasta el primer corte</b> de la pistola, sin agregar más. Toca <b>Registrar carga</b> (la primera vez no hace falta poner litros).</li>
+        <li>Maneja normal <b>con la app conectada</b>. Si anotas el odómetro, los km quedan exactos aunque algún tramo lo hagas sin la app.</li>
+        <li>Al volver a cargar, en lo posible en la <b>misma bomba</b> y otra vez hasta el corte, anota los litros que marca la bomba y registra.</li>
+        <li>Espera al menos medio estanque entre cargas: con pocos km el error del llenado pesa mucho. Con 2–3 cargas el factor queda afinado.</li>
+        <li>Si cargas sin llegar al corte, desmarca "Llené hasta el corte": esos litros se suman a la próxima carga completa.</li>
+      </ol>
+    </section>
+
     <!-- AJUSTES -->
     <section id="tab-cfg" class="tab">
       <h2>Ajustes</h2>
@@ -147,6 +189,7 @@
   <nav class="tabs">
     <button data-tab="drive" class="active">Manejar</button>
     <button data-tab="zone">Mi zona</button>
+    <button data-tab="tank">Tanque</button>
     <button data-tab="cfg">Ajustes</button>
   </nav>
 

@@ -31,6 +31,9 @@ Adaptador: **KONNWEI KW905** (ELM327 Bluetooth LE).
   Entonces cambia la zona a 3000–5500 rpm (3300 si vas cargado) y avisa por voz **“Baja a cuarta”** antes de que el motor se ahogue,
   sin mandarte a una marcha que pase de 5000 rpm. En plano vuelve sola al modo ahorro. El botón **Voy cargado** hace que entre antes.
   Avisa también si te pasas de 5500 rpm.
+- **Consumo real (pestaña Tanque):** método tanque lleno a tanque lleno. Registra cada carga (litros de la bomba y, opcional,
+  odómetro), calcula el km/L real del período, lo compara con lo estimado y sugiere el factor de corrección
+  (promedio de las últimas 3 cargas confiables). Cargas parciales se suman a la siguiente completa; se puede deshacer.
 - **Importa registros de Car Scanner** (CSV) para aprender de viajes anteriores.
 - **Lectura rápida:** si la ECU es CAN, pide varias PIDs en una sola consulta (hasta 6), con vuelta automática a una por vez.
 - La zona aprendida solo reemplaza a la recomendada cuando los datos permiten comparar (al menos 4 rangos, 1000 rpm de amplitud
@@ -69,6 +72,7 @@ python3 -m http.server 8080   # y abrir http://localhost:8080 → botón Demo
 | `js/import.js` | Importar registros de Car Scanner |
 | `js/power.js` | Detector de subidas y consejos del modo fuerza |
 | `js/vehicles.js` | Perfiles de vehículo (marchas, zonas, PIDs) |
+| `js/tank.js` | Consumo real tanque lleno a tanque lleno y factor de corrección |
 | `js/stats.js` | Rendimiento por rango de RPM y zona verde |
 | `js/advise.js` | Color del indicador y consejo de cambio |
 | `js/sim.js` | Simulador de ELM327 + camioneta |

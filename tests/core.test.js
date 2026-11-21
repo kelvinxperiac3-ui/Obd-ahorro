@@ -281,3 +281,43 @@ test('no aprende una zona de un viaje solo de carretera', () => {
   for (const rpm of [3500, 3750, 4000, 4250]) for (let i = 0; i < 60; i++) st2.add({ rpm: rpm + 10, speed: 100, lph: rpm / 300, gear: 5, dt: 1 });
   assert.equal(st2.zone(5, 0.9, { min: 1500, max: 2900 }).reason, 'rango');
 });
+
+import { newTank, addDriving, registerFill, undoFill, suggestedFactor } from '../js/tank.js';
+
+test('tanque lleno a tanque lleno: km/L real y factor', () => {
+  const t = newTank();
+  assert.equal(registerFill(t, { full: true, odo: 10000 }).type, 'start');
+  addDriving(t, 65, 6.25); // viaje 1: la app estimó 6.25 L
+  addDriving(t, 75, 6.36);
+  // carga parcial en el camino (no hasta el corte)
+  assert.equal(registerFill(t, { liters: 5, full: false }).pendingL, 5);
+  const r = registerFill(t, { liters: 8.0, odo: 10140, full: true });
+  assert.equal(r.type, 'full');
+  assert.equal(r.km, 140);
+  assert.equal(r.liters, 13);
+  assert.equal(r.realKmL, 10.77);
+  assert.equal(r.factor, Math.round((13 / 12.61) * 1000) / 1000);
+  assert.deepEqual(r.warnings, []);
+  assert.ok(t.period && t.period.km === 0); // empieza el siguiente período
+  assert.equal(suggestedFactor(t.history).factor, r.factor);
+});
+
+test('tanque: tramos sin la app y deshacer', () => {
+  const t = newTank();
+  registerFill(t, { full: true, odo: 5000 });
+  addDriving(t, 80, 8); // la app midió 80 de 100 km
+  const r = registerFill(t, { liters: 11, odo: 5100, full: true });
+  assert.equal(r.km, 100);
+  assert.equal(r.coverage, 0.8);
+  assert.ok(r.warnings.includes('cobertura'));
+  assert.equal(r.factor, 1.1); // 11 / (8 / 0.8)
+  assert.equal(suggestedFactor(t.history), null); // no confiable
+  assert.ok(undoFill(t));
+  assert.equal(t.history.length, 0);
+  assert.equal(t.period.km, 80);
+  // corto
+  const t2 = newTank();
+  registerFill(t2, { full: true });
+  addDriving(t2, 20, 2);
+  assert.ok(registerFill(t2, { liters: 2, full: true }).warnings.includes('corto'));
+});
