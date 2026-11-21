@@ -48,6 +48,7 @@ function mask(base, pids) {
 export class SimTransport {
   constructor(vehicleId = 'md201') {
     this.vid = MODELS[vehicleId] ? vehicleId : 'md201';
+    this.kline = this.vid === 'md201'; // la MD201 real usa K-Line (protocolo A4)
     this.M = MODELS[this.vid];
     this.onData = null;
     this.onDisconnect = null;
@@ -143,14 +144,16 @@ export class SimTransport {
     // Atajo "1" al final: el ELM contesta sin esperar a otras computadoras (más rápido).
     let c = cmd;
     let wait = 25;
+    if (c.startsWith('01') && this.kline) wait += this.at2 ? 70 : 110; // K-Line: línea lenta
     if (/^01([0-9A-F]{2})+[1-9]$/.test(c)) c = c.slice(0, -1);
-    else if (c.startsWith('01')) wait += 90; // espera del ELM por más respuestas
+    else if (c.startsWith('01')) wait += this.at2 ? 40 : 90; // espera del ELM por más respuestas
     const reply = this.answer(c);
     setTimeout(() => this.onData?.(reply + '\r\r>'), wait);
   }
 
   /** Respuesta CAN a varias PIDs, en tramas numeradas como un ELM327 real. */
   multi(pids) {
+    if (this.kline) return this.answer('01' + pids[0]); // K-Line: la ECU solo contesta la primera
     let data = '41';
     for (const p of pids) {
       const r = this.answer('01' + p);
@@ -168,7 +171,9 @@ export class SimTransport {
     const hex = (n, w = 2) => Math.round(Math.max(0, n)).toString(16).toUpperCase().padStart(w, '0');
     const diesel = this.vid === 'homan';
     if (cmd === 'ATZ') return '\r\rELM327 v1.5 (simulador)';
-    if (cmd === 'ATDPN') return 'A6';
+    if (cmd === 'ATDPN') return this.kline ? 'A4' : 'A6';
+    if (cmd === 'ATAT2') { this.at2 = true; return 'OK'; }
+    if (cmd === 'ATAT1') { this.at2 = false; return 'OK'; }
     if (cmd.startsWith('AT')) return 'OK';
     if (/^01(00|20|40)$/.test(cmd)) return mask(cmd.slice(2), this.M.pids);
     if (/^01([0-9A-F]{2}){2,6}$/.test(cmd)) return this.multi(cmd.slice(2).match(/../g));

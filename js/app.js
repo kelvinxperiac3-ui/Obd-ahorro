@@ -12,7 +12,7 @@ import { HillDetector, powerAdvice, pedalPct } from './power.js';
 import { advise, gearName } from './advise.js';
 
 const $ = (id) => document.getElementById(id);
-export const APP_VERSION = '2026-11-21e';
+export const APP_VERSION = '2026-11-22a';
 
 // ---------- persistencia (localStorage protegido) ----------
 const store = {
@@ -93,7 +93,8 @@ let noRpm = 0;
 let reconnecting = false;
 let hiddenAt = null;
 let multi = false; // varias PIDs por consulta (CAN)
-let suffix = false; // atajo "1": no esperar más respuestas
+let suffix = false;
+let aggressive = false; // ATAT2 // atajo "1": no esperar más respuestas
 let rate = { n: 0, q: 0, ms: 0, since: performance.now() };
 const live = {};
 const liveAt = {};
@@ -143,7 +144,7 @@ async function start(kind) {
     setConn('busy', 'Iniciando ELM327…');
     const info = await elm.init();
     $('dElm').textContent = info.version || '?';
-    $('dProto').textContent = info.protocol || '?';
+    $('dProto').textContent = protoName(info.protocol);
     log(`ELM listo: ${info.version} protocolo ${info.protocol}`);
 
     const sup = await readSupported(elm);
@@ -191,6 +192,17 @@ async function stop() {
   if (pendingReload) location.reload();
 }
 
+const PROTOCOLS = {
+  1: 'SAE J1850 PWM', 2: 'SAE J1850 VPW', 3: 'ISO 9141-2 (K-Line, lento)', 4: 'ISO 14230-4 KWP (K-Line, lento)',
+  5: 'ISO 14230-4 KWP rápido (K-Line, lento)', 6: 'CAN 11 bit 500k', 7: 'CAN 29 bit 500k', 8: 'CAN 11 bit 250k',
+  9: 'CAN 29 bit 250k', A: 'SAE J1939 (CAN)',
+};
+function protoName(code = '') {
+  const c = code.replace(/^A/, '');
+  const name = PROTOCOLS[c.toUpperCase()];
+  return name ? `${code} · ${name}` : code || '?';
+}
+
 function setConn(state, name) {
   $('dot').className = 'dot ' + state;
   $('connName').textContent = name;
@@ -231,6 +243,7 @@ async function timed(cmd, pids, isMulti) {
 async function testFast() {
   multi = false;
   suffix = false;
+  aggressive = false;
   const probe = [...pollList, ...slowList].slice(0, 3);
   try {
     if (probe.length >= 2) {
@@ -243,6 +256,23 @@ async function testFast() {
     const fast = await timed('01' + pids.join('') + '1', pids, multi);
     suffix = fast.ok && fast.ms <= base.ms + 20;
     log(`Atajo "1": ${fast.ok ? `${Math.round(base.ms)} → ${Math.round(fast.ms)} ms` : 'no lo acepta'} → ${suffix ? 'lo uso' : 'no lo uso'}`);
+    // Tiempos adaptativos agresivos (ATAT2): el ELM espera menos a la ECU. Se queda solo si
+    // responde bien y más rápido.
+    const avg = async () => {
+      let ms = 0;
+      for (let i = 0; i < 3; i++) {
+        const r = await timed(cmdFor(pids), pids, multi);
+        if (!r.ok) return Infinity;
+        ms += r.ms;
+      }
+      return ms / 3;
+    };
+    const t1 = await avg();
+    const at2 = (await elm.send('ATAT2')).join('');
+    const t2 = /OK/.test(at2) ? await avg() : Infinity;
+    aggressive = t2 < t1 - 5;
+    if (!aggressive && /OK/.test(at2)) await elm.send('ATAT1');
+    log(`ATAT2: ${/OK/.test(at2) ? `${Math.round(t1)} → ${Math.round(t2)} ms` : 'no lo acepta'} → ${aggressive ? 'lo uso' : 'no lo uso'}`);
   } catch (e) {
     log('Prueba de lectura rápida: ' + e.message);
   }
@@ -253,6 +283,7 @@ function showFast() {
   $('dMulti').textContent = [
     multi ? 'varias PIDs por consulta' : 'una PID por consulta',
     suffix ? 'atajo "1" activo' : 'sin atajo',
+    ...(aggressive ? ['tiempos agresivos'] : []),
   ].join(' · ');
 }
 
@@ -341,10 +372,22 @@ async function reconnect() {
 // Qué pedir en cada vuelta: RPM y velocidad siempre (es lo que se ve cambiar al manejar);
 // consumo y pedal una vuelta por medio; temperatura y carga cada 8 vueltas.
 const FAST = new Set(['0C', '0D']);
+const FUEL = new Set(['0B', '10', '5E']); // datos para calcular el consumo
 function cycleList(n) {
-  const fast = pollList.filter((p) => FAST.has(p));
-  const mid = pollList.filter((p) => !FAST.has(p));
-  return [...fast, ...(n % 2 === 0 ? mid : []), ...(n % 8 === 0 ? slowList : [])];
+  if (multi) {
+    // CAN: varias PIDs por consulta, cuesta casi lo mismo pedir 2 que 6.
+    const fast = pollList.filter((p) => FAST.has(p));
+    const mid = pollList.filter((p) => !FAST.has(p));
+    return [...fast, ...(n % 2 === 0 ? mid : []), ...(n % 8 === 0 ? slowList : [])];
+  }
+  // Una PID por consulta (K-Line, como la MD201): cada pregunta cuesta, así que en cada
+  // vuelta van las RPM y UNA cosa más, alternando velocidad y consumo. Así las RPM se
+  // actualizan unas 2 veces por segundo en vez de una vez cada 1.5 s.
+  const speed = pollList.filter((p) => p === '0D');
+  const fuel = pollList.filter((p) => FUEL.has(p));
+  const other = pollList.filter((p) => !FAST.has(p) && !FUEL.has(p));
+  const second = n % 2 === 1 && speed.length ? speed : fuel;
+  return ['0C', ...second, ...(n % 4 === 0 ? other : []), ...(n % 16 === 0 ? slowList : [])].filter((p, i, a) => a.indexOf(p) === i && (p !== '0C' || pollList.includes('0C')));
 }
 
 // Comando OBD para una o varias PIDs. Con `suffix`, se agrega "1": el ELM327 contesta apenas
@@ -424,7 +467,7 @@ function process(s) {
   // Los datos que no se piden en cada vuelta (consumo, pedal, temperatura…) usan el último valor
   // leído, si es reciente.
   for (const k of Object.keys(s)) liveAt[k] = now;
-  for (const k of ['map', 'maf', 'throttle', 'pedalD', 'fuelRate', 'fuelSys', 'iat', 'load']) {
+  for (const k of ['speed', 'map', 'maf', 'throttle', 'pedalD', 'fuelRate', 'fuelSys', 'iat', 'load']) {
     if (s[k] == null && live[k] != null && now - (liveAt[k] || 0) < 6000) s[k] = live[k];
   }
 
