@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>OBD Ahorro</title>
+  <meta name="description" content="Encuentra el rango de RPM donde tu camioneta gasta menos, leyendo el OBD2 en vivo.">
+  <meta name="theme-color" content="#0f1114">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="conn"><span id="dot" class="dot"></span><span id="connName">Sin conectar</span></div>
+    <div class="conn-actions">
+      <button id="btnConnect" class="btn primary">Conectar</button>
+      <button id="btnDemo" class="btn ghost">Demo</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- MANEJAR -->
+    <section id="tab-drive" class="tab active">
+      <div id="lamp" class="lamp off">
+        <div class="lamp-value"><span id="kmL">--</span></div>
+        <div class="lamp-unit" id="kmLUnit">km/L</div>
+      </div>
+      <div id="advice" class="advice">Conecta el adaptador o prueba el modo Demo</div>
+
+      <div class="gauges">
+        <div class="g"><div class="gv" id="rpm">--</div><div class="gl">RPM</div></div>
+        <div class="g"><div class="gv" id="speed">--</div><div class="gl">km/h</div></div>
+        <div class="g"><div class="gv" id="gear">-</div><div class="gl">Marcha</div></div>
+      </div>
+
+      <div class="rpmbar" aria-hidden="true">
+        <div class="rpmzone" id="rpmZone"></div>
+        <div class="rpmneedle" id="rpmNeedle"></div>
+        <div class="rpmticks"><span>0</span><span>1000</span><span>2000</span><span>3000</span><span>4000</span><span>5000</span></div>
+      </div>
+      <div class="zonecap" id="zoneCap">Zona verde: 1500–2500 rpm (inicial)</div>
+
+      <div class="trip">
+        <div><b id="tripKm">0.0</b><span>km</span></div>
+        <div><b id="tripL">0.00</b><span>litros</span></div>
+        <div><b id="tripAvg">--</b><span>km/L viaje</span></div>
+        <div><b id="tripGreen">--</b><span>% en verde</span></div>
+      </div>
+      <div class="mini" id="mini">Carga -- · Acelerador -- · L/h -- · Método --</div>
+      <button id="btnTripReset" class="btn ghost small">Reiniciar viaje</button>
+    </section>
+
+    <!-- MI ZONA -->
+    <section id="tab-zone" class="tab">
+      <h2>Tu zona verde</h2>
+      <p id="zoneSummary" class="lead">Aún no hay datos.</p>
+      <div class="chart" id="chart"></div>
+      <p class="hint">Barras = km/L promedio en cada rango de RPM (todas las marchas). Verde = zona recomendada. Se necesita al menos 30 s en un rango para contarlo.</p>
+
+      <h3>Por marcha</h3>
+      <table class="gtable">
+        <thead><tr><th>Marcha</th><th>km/h a 1000 rpm</th><th>Zona</th><th>Mejor km/L</th></tr></thead>
+        <tbody id="gearRows"><tr><td colspan="4">Aprendiendo las marchas…</td></tr></tbody>
+      </table>
+
+      <div class="row-btns">
+        <button id="btnCsv" class="btn">Exportar viaje (CSV)</button>
+        <button id="btnJson" class="btn">Exportar datos (JSON)</button>
+        <button id="btnWipe" class="btn danger">Borrar lo aprendido</button>
+      </div>
+    </section>
+
+    <!-- AJUSTES -->
+    <section id="tab-cfg" class="tab">
+      <h2>Ajustes</h2>
+      <label class="field">Motor
+        <select id="cfgEngine">
+          <option value="1.243">Changan MD201 1.2 L (1243 cc)</option>
+          <option value="1.493">Changan MD201 XL 1.5 L (1493 cc)</option>
+          <option value="custom">Otro…</option>
+        </select>
+      </label>
+      <label class="field" id="customDispWrap" hidden>Cilindrada (litros)
+        <input id="cfgDisp" type="number" step="0.001" min="0.6" max="8">
+      </label>
+      <label class="field">Marchas de la caja
+        <input id="cfgGears" type="number" min="4" max="6" step="1">
+      </label>
+      <label class="check"><input id="cfgVoice" type="checkbox"> Avisos por voz (“Sube a 3ª”)</label>
+      <label class="check"><input id="cfgDfco" type="checkbox"> Detectar freno motor (consumo 0 al soltar el acelerador en marcha)</label>
+      <label class="field">Eficiencia volumétrica (solo si el motor no tiene MAF)
+        <input id="cfgVe" type="number" step="0.01" min="0.5" max="1.1">
+      </label>
+      <label class="field">Factor de corrección de consumo
+        <input id="cfgCorr" type="number" step="0.01" min="0.5" max="1.5">
+      </label>
+      <p class="hint">Si al llenar el tanque ves que el consumo real es distinto, ajusta este factor. Ejemplo: la app marcó 10 L pero cargaste 11 L → 1.10.</p>
+
+      <h3>Diagnóstico</h3>
+      <dl class="diag">
+        <dt>Adaptador</dt><dd id="dElm">--</dd>
+        <dt>Protocolo</dt><dd id="dProto">--</dd>
+        <dt>Cálculo de consumo</dt><dd id="dMethod">--</dd>
+        <dt>PIDs leídos</dt><dd id="dPids">--</dd>
+        <dt>Lecturas por segundo</dt><dd id="dRate">--</dd>
+      </dl>
+      <form id="cmdForm" class="cmd">
+        <input id="cmdIn" placeholder="Comando manual, ej. 010C" autocomplete="off" autocapitalize="characters">
+        <button class="btn">Enviar</button>
+      </form>
+      <pre id="log" class="log"></pre>
+    </section>
+  </main>
+
+  <nav class="tabs">
+    <button data-tab="drive" class="active">Manejar</button>
+    <button data-tab="zone">Mi zona</button>
+    <button data-tab="cfg">Ajustes</button>
+  </nav>
+
+  <div id="toast" class="toast" hidden></div>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
