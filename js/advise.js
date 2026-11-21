@@ -26,9 +26,12 @@ export function advise(s, zone, gears, nGears, opts = {}) {
   const up = g && g < nGears && gears ? gears.rpmInGear(s.speed, g + 1) : null;
   const down = g && g > 1 && gears ? gears.rpmInGear(s.speed, g - 1) : null;
 
-  if ((s.throttle != null && s.throttle > 80) || (s.load != null && s.load > 92)) {
+  // "A fondo" por el pedal. La carga calculada no sirve para esto: en la MD201 marca 84–100 %
+  // en carretera aunque se vaya suave. Solo se usa si no hay dato de pedal.
+  const floored = s.throttle != null ? s.throttle > 80 : (s.load != null && s.load > 95);
+  if (floored) {
     if (s.rpm > zone.max && up && up >= upMin) return { color: 'red', msg: `Sube a ${gearName(g + 1)} y suelta el acelerador`, shift: g + 1 };
-    return { color: 'red', msg: 'Acelerador a fondo: suelta un poco' };
+    return { color: 'yellow', msg: 'Acelerador a fondo: suelta un poco' };
   }
 
   if (s.rpm > zone.max) {
@@ -36,7 +39,7 @@ export function advise(s, zone, gears, nGears, opts = {}) {
     const margin = g === nGears ? (opts.redMarginTop ?? 1200) : (opts.redMargin ?? 600);
     const color = s.rpm > zone.max + margin ? 'red' : 'yellow';
     if (up && up >= Math.max(upMin, zone.min - 300)) return { color, msg: `Sube a ${gearName(g + 1)}`, shift: g + 1 };
-    if (g === nGears) return { color, msg: 'Más rápido = más consumo' };
+    if (g === nGears) return { color, msg: opts.topHint || 'Más rápido = más consumo' };
     return { color, msg: 'RPM altas' };
   }
 

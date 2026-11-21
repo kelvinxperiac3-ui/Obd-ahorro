@@ -12,6 +12,7 @@ import { HillDetector, powerAdvice, pedalPct } from './power.js';
 import { advise, gearName } from './advise.js';
 
 const $ = (id) => document.getElementById(id);
+export const APP_VERSION = '2026-11-21c';
 
 // ---------- persistencia (localStorage protegido) ----------
 const store = {
@@ -96,6 +97,8 @@ const trip = newTrip();
 const tripLog = [];
 
 function newTrip() { return { km: 0, l: 0, t: 0, green: 0, start: Date.now() }; }
+let pendingReload = false;
+let lastDataAt = 0; // última lectura con motor encendido (para separar viajes)
 
 // ---------- log ----------
 const logLines = [];
@@ -148,6 +151,12 @@ async function start(kind) {
     $('btnDemo').hidden = true;
     running = true;
     lastTs = 0;
+    if (lastDataAt && Date.now() - lastDataAt > 10 * 60 * 1000) {
+      // Más de 10 min sin datos: es otro viaje (el CSV no mezcla viajes).
+      Object.assign(trip, newTrip());
+      tripLog.length = 0;
+      log('Viaje nuevo');
+    }
     useGps = !!V.gpsSpeed;
     zeroSpeedSince = null;
     startGps();
@@ -175,6 +184,7 @@ async function stop() {
   renderNoEngine();
   $('advice').textContent = 'Desconectado';
   save(true);
+  if (pendingReload) location.reload();
 }
 
 function setConn(state, name) {
@@ -318,6 +328,7 @@ function process(s) {
     return;
   }
   noRpm = 0;
+  lastDataAt = Date.now();
   // Los PIDs lentos (temperatura, carga) se leen cada pocos ciclos: usar el último valor.
   for (const k of ['iat', 'load', 'fuelSys']) if (s[k] == null && live[k] != null) s[k] = live[k];
 
@@ -364,6 +375,7 @@ function process(s) {
     adv = advise({ ...s, throttle: pedal, lph, gear, fuelCut }, zone, gears, cfg.nGears, {
       lugRpm: V.lugRpm, upMinRpm: V.upMinRpm, idleRpm: V.idleRpm,
       redMargin: V.fuel === 'diesel' ? 400 : 600, redMarginTop: V.fuel === 'diesel' ? 600 : 1200,
+      topHint: gear === cfg.nGears ? topGearHint(s.speed) : null,
     });
   }
 
@@ -390,6 +402,20 @@ function process(s) {
 function defaultZone(gear) {
   return gear && gear === cfg.nGears ? V.ecoTop : V.eco;
 }
+// En la última marcha: cuánto mejor rendiste a menor velocidad (según lo aprendido).
+function topGearHint(speed) {
+  if (speed == null) return null;
+  const top = stats.bySpeed(60)
+    .map((b) => ({ band: b.band, g: b.gears.find((x) => x.gear === cfg.nGears) }))
+    .filter((b) => b.g);
+  const cur = top.find((b) => b.band === Math.floor(speed / 10) * 10);
+  if (!cur) return null;
+  const best = top.reduce((a, b) => (b.g.kmL > a.g.kmL ? b : a));
+  const gain = best.g.kmL / cur.g.kmL - 1;
+  if (best.band >= cur.band || gain < 0.08) return null;
+  return `A ${best.band}–${best.band + 10} km/h rindes ${Math.round(gain * 100)} % más`;
+}
+
 function zoneFor(gear) {
   const gz = gear ? stats.zone(gear, 0.9, defaultZone(gear)) : null;
   return gz?.learned ? gz : { ...defaultZone(gear), learned: false };
@@ -694,13 +720,22 @@ document.querySelectorAll('.tabs button').forEach((b) => {
 $('btnConnect').onclick = () => start('ble');
 $('btnDemo').onclick = () => start('sim');
 
+$('dVersion').textContent = APP_VERSION;
 loadCfgForm();
 setGauge();
 renderZoneTab();
 if (!BleTransport.available()) log('Web Bluetooth no disponible en este navegador. Usa Chrome en Android.');
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
+  navigator.serviceWorker.register('sw.js').then((reg) => reg.update()).catch(() => {});
+  // Si llega una versión nueva, recargar (solo si no está conectado, para no cortar un viaje).
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloaded) return;
+    if (running) { toast('Hay una versión nueva: se aplicará al desconectar'); pendingReload = true; return; }
+    reloaded = true;
+    location.reload();
+  });
 }
 
 // Para pruebas automáticas
