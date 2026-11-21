@@ -47,36 +47,48 @@ export class SimTransport {
     this.t += dt;
     if (Math.floor(prevT / 138) !== Math.floor(this.t / 138)) this.shiftAt = 1900 + Math.random() * 1800;
 
+    const x = this.t % 138;
+    const grade = x > 50 && x < 95 ? 0.08 : 0; // cuesta del 8 % en la parte de carretera
+    const m = 1650; // camioneta con algo de carga
+    const ms0 = Math.max(0.5, this.v / 3.6);
+    const resist = 0.5 * 1.2 * 0.95 * ms0 ** 2 + m * 9.81 * (0.013 + grade); // N
+
+    // potencia disponible del motor 1.2 (torque máx ~119 Nm a 4800 rpm)
+    const rpm0 = Math.max(900, this.rpm);
+    const torque = Math.max(70, 119 * (1 - ((rpm0 - 4800) / 4500) ** 2));
+    const Pmax = (torque * rpm0) / 9549; // kW
+
     const tv = this.target(this.t);
-    const a = Math.max(-2.5, Math.min(1.6, (tv - this.v) / 3.6 / 1.5)); // m/s²
+    let a = Math.max(-2.5, Math.min(1.6, (tv - this.v) / 3.6 / 1.5)); // m/s² deseada
+    const aMax = (Pmax * 900 / ms0 - resist) / m; // 90 % de eficiencia de transmisión
+    if (this.gear > 1 || this.v > 10) a = Math.min(a, aMax);
     this.v = Math.max(0, this.v + a * 3.6 * dt);
 
-    // cambios de marcha del "conductor"
+    // cambios de marcha del "conductor" (algo perezoso en las subidas)
     let rpm = (this.v * 1000) / RATIOS[this.gear - 1];
-    if (rpm > this.shiftAt && this.gear < 5) this.gear++;
-    else if (rpm < 1100 && this.gear > 1) this.gear--;
+    const fullPower = a >= aMax - 0.01 && tv > this.v + 1;
+    if (rpm > this.shiftAt && this.gear < 5 && !fullPower) this.gear++;
+    else if ((rpm < 1100 || (fullPower && rpm < 2200)) && this.gear > 1) this.gear--;
     rpm = (this.v * 1000) / RATIOS[this.gear - 1];
     const clutch = rpm < 850;
-    this.rpm = clutch ? 800 + Math.min(700, a * 400) * (this.v > 0 ? 1 : 0) : rpm;
+    this.rpm = clutch ? 800 + Math.min(700, Math.max(0, a) * 400) * (this.v > 0 ? 1 : 0) : rpm;
 
     // potencia necesaria
     const ms = this.v / 3.6;
-    const m = 1350;
-    const P = (0.5 * 1.2 * 0.95 * ms ** 3 + m * 9.81 * 0.013 * ms + m * a * ms) / 1000; // kW
-    const Pmax = Math.max(8, 70 * Math.min(1, this.rpm / 5500));
+    const P = (resist * ms + m * a * ms) / 900; // kW en el motor
     const frac = Math.max(0, Math.min(1, P / Pmax));
     let fuelGs;
     if (P < 0 && this.rpm > 1200 && !clutch) {
       fuelGs = 0; // corte de inyección
       this.cut = true;
-      this.thr = 11;
+      this.thr = 6.7;
     } else {
       this.cut = false;
       const r = (this.rpm - 1900) / 1000;
       const bsfc = 255 * (1 + 0.18 * r * r + 0.9 * (1 - frac) ** 2); // g/kWh
       const friction = (this.rpm / 1000) * 0.9; // kW de pérdidas
       fuelGs = (Math.max(0, P) + friction) * bsfc / 3600;
-      this.thr = 11 + frac * 80;
+      this.thr = 6.7 + frac * 75; // la MD201 marca ~6.7 % en reposo y ~82 % a fondo
     }
     this.load = Math.min(100, 18 + frac * 85);
     this.maf = Math.max(0.6, fuelGs * 14.7);

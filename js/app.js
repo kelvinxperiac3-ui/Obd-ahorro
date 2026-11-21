@@ -7,6 +7,7 @@ import { GearLearner, MD201_RATIOS } from './gears.js';
 import { RpmStats, BUCKET, MIN_BUCKET_SECONDS, DEFAULT_TOP_ZONE } from './stats.js';
 import { Analyzer } from './analyzer.js';
 import { parseCarScanner } from './import.js';
+import { HillDetector, powerAdvice, pedalPct, POWER } from './power.js';
 import { advise, gearName } from './advise.js';
 
 const $ = (id) => document.getElementById(id);
@@ -25,12 +26,15 @@ const cfg = Object.assign({
   dfco: true,
   corr: 1,
   gearRatios: MD201_RATIOS,
+  loaded: false,
 }, store.get('cfg', {}));
 
 let gears = new GearLearner(cfg.nGears, store.get('gears', null), cfg.gearRatios);
 let stats = new RpmStats(store.get('stats', null));
 let analyzer = new Analyzer(gears, stats);
 let idleThrottle = store.get('idleThr', 100);
+let fullThrottle = store.get('fullThr', 0); // mariposa máxima vista (la MD201 llega a ~82 %)
+const hill = new HillDetector();
 
 // ---------- estado ----------
 let transport = null;
@@ -198,6 +202,8 @@ function process(s) {
   if (s.throttle != null && s.rpm != null && s.rpm < 1100 && (s.speed ?? 0) < 3) {
     idleThrottle = Math.min(idleThrottle, s.throttle);
   }
+  if (s.throttle != null && (s.rpm ?? 0) > 1500) fullThrottle = Math.max(fullThrottle, s.throttle);
+  const pedal = pedalPct(s.throttle, idleThrottle, fullThrottle);
 
   const f = fuelLph(s, { ...DEFAULT_ENGINE, displacement: cfg.displacement, ve: cfg.ve });
   let lph = f ? f.lph * cfg.corr : null;
@@ -211,9 +217,17 @@ function process(s) {
   }
   if (f) $('dMethod').textContent = f.method + (cfg.corr !== 1 ? ` ×${cfg.corr}` : '');
 
-  const { gear } = analyzer.feed({ t: now / 1000, rpm: s.rpm, speed: s.speed, lph, fuelCut });
-  const zone = zoneFor(gear);
-  const adv = advise({ ...s, lph, gear, fuelCut }, zone, gears, cfg.nGears);
+  // En subida o cargado el km/L no es comparable con el plano: no se usa para la zona de ahorro.
+  const { gear, accel } = analyzer.feed({ t: now / 1000, rpm: s.rpm, speed: s.speed, lph, fuelCut, skip: hill.active });
+  const climbing = hill.update({ t: now / 1000, pedal, accel, speed: s.speed, loaded: cfg.loaded });
+  let zone = zoneFor(gear);
+  let adv = null;
+  if (climbing) {
+    adv = powerAdvice({ ...s, gear }, gears, cfg.nGears, cfg.loaded);
+    if (adv) zone = { min: cfg.loaded ? POWER.minLoaded : POWER.min, max: POWER.max, power: true };
+  }
+  if (!adv && (s.rpm ?? 0) > POWER.max) adv = powerAdvice({ ...s, gear }, gears, cfg.nGears, cfg.loaded);
+  if (!adv) adv = advise({ ...s, throttle: pedal, lph, gear, fuelCut }, zone, gears, cfg.nGears);
 
   if (dt > 0 && dt < 5) {
     if (s.speed != null) trip.km += (s.speed * dt) / 3600;
@@ -224,10 +238,10 @@ function process(s) {
 
   const kml = kmPerL(s.speed, lph);
   if (tripLog.length < 30000) {
-    tripLog.push([new Date().toISOString(), r1(s.rpm), s.speed, r2(s.maf), r2(s.map), r2(lph), r2(kml), gear ?? '', r1(s.throttle), r1(s.load), adv.color]);
+    tripLog.push([new Date().toISOString(), r1(s.rpm), s.speed, r2(s.maf), r2(s.map), r2(lph), r2(kml), gear ?? '', r1(s.throttle), r1(s.load), adv.color, climbing ? 1 : 0]);
   }
 
-  render(s, { lph, kml, gear, zone, adv, method: f?.method });
+  render(s, { lph, kml, gear, zone, adv, method: f?.method, pedal, climbing });
   speak(adv);
   if (now - lastSave > 10000) save();
 }
@@ -247,6 +261,7 @@ function save(force) {
   store.set('gears', gears.toJSON());
   store.set('stats', stats.toJSON());
   store.set('idleThr', idleThrottle);
+  store.set('fullThr', fullThrottle);
   if (force) renderZoneTab();
 }
 
@@ -254,19 +269,24 @@ function save(force) {
 function speak(adv) {
   if (!cfg.voice || !adv.shift || !('speechSynthesis' in window)) return;
   const now = Date.now();
-  if (adv.msg === lastSpoken.msg && now - lastSpoken.at < 20000) return;
-  if (now - lastSpoken.at < 6000) return;
+  if (adv.msg === lastSpoken.msg && now - lastSpoken.at < (adv.power ? 10000 : 20000)) return;
+  if (now - lastSpoken.at < (adv.power ? 3000 : 6000)) return;
   lastSpoken = { msg: adv.msg, at: now };
-  const u = new SpeechSynthesisUtterance(adv.msg.replace('ª', ''));
+  const ORD = ['', 'primera', 'segunda', 'tercera', 'cuarta', 'quinta', 'sexta'];
+  const m = /(Sube|Baja|sube|baja) a (\d)/.exec(adv.msg);
+  const text = m ? `${m[1][0].toUpperCase()}${m[1].slice(1)} a ${ORD[m[2]]}` : adv.msg;
+  const u = new SpeechSynthesisUtterance(text);
   u.lang = 'es-ES';
   speechSynthesis.speak(u);
 }
 
 // ---------- pintar ----------
-const RPM_MAX = 5000;
+const RPM_MAX = 6000;
 function render(s, d) {
   const lamp = $('lamp');
   lamp.className = 'lamp ' + d.adv.color;
+  $('modeBadge').hidden = !d.climbing;
+  $('rpmZone').classList.toggle('power', !!d.zone.power);
   if (d.kml != null) {
     $('kmL').textContent = d.kml >= 99 ? '∞' : d.kml.toFixed(1);
     $('kmLUnit').textContent = 'km/L';
@@ -286,14 +306,15 @@ function render(s, d) {
   $('rpmNeedle').style.left = pct(s.rpm ?? 0);
   $('rpmZone').style.left = pct(d.zone.min);
   $('rpmZone').style.width = `calc(${pct(d.zone.max)} - ${pct(d.zone.min)})`;
-  $('zoneCap').textContent = `Zona verde${d.gear && d.zone.learned ? ' en ' + gearName(d.gear) : ''}: ${d.zone.min}–${d.zone.max} rpm` +
+  if (d.zone.power) $('zoneCap').textContent = `Zona de fuerza: ${d.zone.min}–${d.zone.max} rpm${cfg.loaded ? ' (cargado)' : ''}`;
+  else $('zoneCap').textContent = `Zona verde${d.gear && d.zone.learned ? ' en ' + gearName(d.gear) : ''}: ${d.zone.min}–${d.zone.max} rpm` +
     (d.zone.learned ? ` (aprendida, mejor ${d.zone.best.toFixed(1)} km/L)` : ' (inicial, aprendiendo)');
 
   $('tripKm').textContent = trip.km.toFixed(1);
   $('tripL').textContent = trip.l.toFixed(2);
   $('tripAvg').textContent = trip.l > 0.01 ? (trip.km / trip.l).toFixed(1) : '--';
   $('tripGreen').textContent = trip.t > 5 ? Math.round((trip.green / trip.t) * 100) : '--';
-  $('mini').textContent = `Carga ${fmt(s.load)}% · Acelerador ${fmt(s.throttle)}% · ${d.lph != null ? d.lph.toFixed(2) : '--'} L/h · ${d.method || '--'}`;
+  $('mini').textContent = `Carga ${fmt(s.load)}% · Pedal ${fmt(d.pedal)}% · ${d.lph != null ? d.lph.toFixed(2) : '--'} L/h · ${d.method || '--'}`;
 
   const el = (performance.now() - rate.since) / 1000;
   if (el > 3) { $('dRate').textContent = (rate.n / el).toFixed(1); rate = { n: 0, since: performance.now() }; }
@@ -366,7 +387,7 @@ function download(name, text, type) {
 }
 $('btnCsv').onclick = () => {
   if (!tripLog.length) { toast('No hay datos de este viaje todavía'); return; }
-  const head = 'hora,rpm,kmh,maf_gs,map_kpa,l_h,km_l,marcha,acelerador,carga,color';
+  const head = 'hora,rpm,kmh,maf_gs,map_kpa,l_h,km_l,marcha,acelerador,carga,color,modo_fuerza';
   download(`viaje-${new Date().toISOString().slice(0, 16).replace(':', '')}.csv`, [head, ...tripLog.map((r) => r.join(','))].join('\n'), 'text/csv');
 };
 $('btnJson').onclick = () => {
@@ -412,6 +433,19 @@ $('fileImport').onchange = async (e) => {
     toast('No pude importar: ' + err.message, 7000);
   }
 };
+
+function showLoaded() {
+  const b = $('btnLoaded');
+  b.classList.toggle('on', cfg.loaded);
+  b.textContent = cfg.loaded ? 'Voy cargado ✓' : 'Voy cargado';
+}
+$('btnLoaded').onclick = () => {
+  cfg.loaded = !cfg.loaded;
+  store.set('cfg', cfg);
+  showLoaded();
+  toast(cfg.loaded ? 'Modo cargado: aviso para bajar de marcha antes en las subidas' : 'Modo normal');
+};
+showLoaded();
 
 $('btnTripReset').onclick = () => { Object.assign(trip, newTrip()); tripLog.length = 0; };
 

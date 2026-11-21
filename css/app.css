@@ -136,3 +136,9 @@ main { flex: 1; overflow-y: auto; }
 label.btn { display: inline-block; }
 .gtable small { color: var(--muted); }
 .gtable b.ok { color: var(--green); }
+
+.modebar { display: flex; justify-content: space-between; align-items: center; min-height: 36px; gap: 8px; }
+.modebar .toggle { margin-left: auto; }
+.btn.toggle.on { background: #7c2d12; border-color: #ea580c; color: #fff; }
+.badge { background: #ea580c; color: #fff; font-weight: 700; font-size: .85rem; padding: 6px 10px; border-radius: 999px; }
+.rpmzone.power { background: color-mix(in srgb, #ea580c 45%, transparent); }

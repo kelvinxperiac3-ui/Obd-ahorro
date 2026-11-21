@@ -37,7 +37,7 @@ export class Analyzer {
     const steady = a != null && Math.abs(a) < STEADY_ACCEL;
     // Para la zona solo cuentan momentos con el motor empujando, en una marcha conocida
     // y a velocidad pareja (acelerar o frenar distorsiona el km/L).
-    if (!s.fuelCut && gear && steady && s.lph != null && s.lph > 0) {
+    if (!s.fuelCut && !s.skip && gear && steady && s.lph != null && s.lph > 0) {
       this.stats.add({ rpm: s.rpm, speed: s.speed, lph: s.lph, gear, dt });
     }
     return { gear, accel: a, steady, dt };

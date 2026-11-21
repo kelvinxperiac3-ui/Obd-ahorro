@@ -140,3 +140,50 @@ test('solo acumula a velocidad pareja', () => {
   assert.equal(sp[0].band, 60);
   assert.equal(sp[0].gears[0].gear, 5);
 });
+
+import { HillDetector, powerAdvice, pedalPct } from '../js/power.js';
+
+test('pedal relativo con la mariposa de la MD201', () => {
+  assert.equal(pedalPct(6.7, 6.7, 82), 0);
+  assert.equal(pedalPct(82, 6.7, 82), 100);
+  assert.ok(Math.abs(pedalPct(44.35, 6.7, 82) - 50) < 0.1);
+  assert.equal(pedalPct(null, 6.7, 82), null);
+});
+
+test('detecta subida: pedal a fondo y sin ganar velocidad', () => {
+  const h = new HillDetector();
+  assert.equal(h.update({ t: 0, pedal: 90, accel: -0.2, speed: 60 }), false);
+  assert.equal(h.update({ t: 1, pedal: 90, accel: -0.2, speed: 59 }), false);
+  assert.equal(h.update({ t: 2.1, pedal: 90, accel: -0.2, speed: 58 }), true);
+  // acelerando fuerte en plano (gana velocidad): no es subida
+  const h2 = new HillDetector();
+  for (let t = 0; t < 5; t++) assert.equal(h2.update({ t, pedal: 95, accel: 1.2, speed: 40 + t * 4 }), false);
+  // suelta el pedal: sale del modo
+  assert.equal(h.update({ t: 3, pedal: 20, accel: 0, speed: 58 }), false);
+});
+
+test('cargado entra antes', () => {
+  const h = new HillDetector();
+  h.update({ t: 0, pedal: 55, accel: 0.1, speed: 50, loaded: true });
+  assert.equal(h.update({ t: 1.1, pedal: 55, accel: 0.1, speed: 50, loaded: true }), true);
+  const n = new HillDetector();
+  n.update({ t: 0, pedal: 55, accel: 0.1, speed: 50 });
+  assert.equal(n.update({ t: 3, pedal: 55, accel: 0.1, speed: 50 }), false);
+});
+
+test('consejo de fuerza en la MD201', () => {
+  const g = new GearLearner(5, null, MD201_RATIOS);
+  // 5ª a 70 km/h ≈ 2700 rpm en subida → bajar a 4ª (≈3380 rpm)
+  const a = powerAdvice({ rpm: 2703, speed: 70, gear: 5 }, g, 5);
+  assert.equal(a.shift, 4);
+  assert.match(a.msg, /Baja a 4ª/);
+  // 4ª a 70 ≈ 3380 → bien
+  assert.equal(powerAdvice({ rpm: 3380, speed: 70, gear: 4 }, g, 5).color, 'green');
+  // cargado: 3200 rpm ya pide bajar
+  assert.equal(powerAdvice({ rpm: 3200, speed: 66, gear: 4 }, g, 5, true).shift, 3);
+  // no manda a una marcha que pase de 5000 rpm
+  const b = powerAdvice({ rpm: 2900, speed: 60, gear: 3 }, g, 5); // 2ª quedaría en ~5450
+  assert.match(b.msg, /quedará alto/);
+  // pasado de vueltas
+  assert.equal(powerAdvice({ rpm: 5800, speed: 64, gear: 2 }, g, 5).shift, 3);
+});

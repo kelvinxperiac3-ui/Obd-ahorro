@@ -15,6 +15,10 @@ Pensada para: **Changan MD201 2019 (gasolina, manual 5 marchas)** + adaptador **
 - Trae precargadas las **relaciones de las 5 marchas de la MD201** (medidas en un viaje real); también puede aprenderlas sola.
 - Guarda km recorridos y litros gastados **por rango de 250 rpm, por marcha y por velocidad**, solo a velocidad pareja, y calcula la **zona verde**: los rangos con al menos 90 % del mejor km/L.
 - Pantalla de manejo: indicador verde/amarillo/rojo, km/L en vivo, marcha, aviso de cambio (“Sube a 4ª”) y avisos por voz.
+- **Modo fuerza (subidas / carga):** detecta sola cuando vas con el pedal muy pisado y la camioneta no gana velocidad.
+  Entonces cambia la zona a 3000–5500 rpm (3300 si vas cargado) y avisa por voz **“Baja a cuarta”** antes de que el motor se ahogue,
+  sin mandarte a una marcha que pase de 5000 rpm. En plano vuelve sola al modo ahorro. El botón **Voy cargado** hace que entre antes.
+  Avisa también si te pasas de 5500 rpm.
 - **Importa registros de Car Scanner** (CSV) para aprender de viajes anteriores.
 - Modo **Demo** con un simulador, para probar sin la camioneta.
 - Exporta el viaje en CSV y lo aprendido en JSON. Funciona sin señal una vez abierta (service worker).
@@ -48,6 +52,7 @@ python3 -m http.server 8080   # y abrir http://localhost:8080 → botón Demo
 | `js/gears.js` | Aprendizaje de marchas |
 | `js/analyzer.js` | Marcha, velocidad pareja y qué muestras cuentan |
 | `js/import.js` | Importar registros de Car Scanner |
+| `js/power.js` | Detector de subidas y consejos del modo fuerza |
 | `js/stats.js` | Rendimiento por rango de RPM y zona verde |
 | `js/advise.js` | Color del indicador y consejo de cambio |
 | `js/sim.js` | Simulador de ELM327 + camioneta |
