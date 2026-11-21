@@ -12,7 +12,7 @@ import { HillDetector, powerAdvice, pedalPct } from './power.js';
 import { advise, gearName } from './advise.js';
 
 const $ = (id) => document.getElementById(id);
-export const APP_VERSION = '2026-11-21c';
+export const APP_VERSION = '2026-11-21d';
 
 // ---------- persistencia (localStorage protegido) ----------
 const store = {
@@ -91,8 +91,10 @@ let speedSrc = 'OBD';
 let zeroSpeedSince = null;
 let noRpm = 0;
 let multi = false; // varias PIDs por consulta (CAN)
-let rate = { n: 0, since: performance.now() };
+let suffix = false; // atajo "1": no esperar más respuestas
+let rate = { n: 0, q: 0, ms: 0, since: performance.now() };
 const live = {};
+const liveAt = {};
 const trip = newTrip();
 const tripLog = [];
 
@@ -145,7 +147,7 @@ async function start(kind) {
     const sup = await readSupported(elm);
     log(`PIDs soportados: ${[...sup].join(' ') || '(no informó)'}`);
     buildPollList(sup);
-    multi = await testMulti();
+    await testFast();
     setConn('on', transport.name);
     $('btnConnect').textContent = 'Desconectar';
     $('btnDemo').hidden = true;
@@ -212,22 +214,44 @@ function buildPollList(sup) {
   showPids();
 }
 
-// Prueba si la ECU acepta varias PIDs en una consulta (solo CAN). Si no, se usa una por vez.
-async function testMulti() {
+// Al conectar, prueba qué acelera la lectura en este vehículo:
+//  1) varias PIDs en una consulta (solo CAN)
+//  2) el atajo "1" al final (el ELM327 no espera respuestas de otras computadoras)
+// Se queda con lo que funcione y responda correcto. Si algo falla después, vuelve atrás solo.
+async function timed(cmd, pids, isMulti) {
+  const t0 = performance.now();
+  const lines = await elm.send(cmd, 3000);
+  const ms = performance.now() - t0;
+  const vals = isMulti ? parseMulti(lines, pids) : { [pids[0]]: decode(lines, pids[0]) };
+  return { ok: pids.every((p) => vals[p] != null), ms, lines };
+}
+
+async function testFast() {
+  multi = false;
+  suffix = false;
   const probe = [...pollList, ...slowList].slice(0, 3);
-  if (probe.length < 2) return false;
   try {
-    const lines = await elm.send('01' + probe.join(''), 3000);
-    const vals = parseMulti(lines, probe);
-    const ok = probe.every((p) => vals[p] != null);
-    log(`Consulta múltiple 01${probe.join('')}: ${ok ? 'sí funciona (lectura rápida)' : 'no, una PID por vez'} → ${lines.join(' | ')}`);
-    $('dMulti').textContent = ok ? 'sí (varias PIDs por consulta)' : 'no (una PID por consulta)';
-    return ok;
+    if (probe.length >= 2) {
+      const r = await timed('01' + probe.join(''), probe, true);
+      multi = r.ok;
+      log(`Consulta múltiple 01${probe.join('')}: ${r.ok ? 'sí' : 'no'} (${Math.round(r.ms)} ms) → ${r.lines.join(' | ')}`);
+    }
+    const pids = multi ? probe : ['0C'];
+    const base = await timed('01' + pids.join(''), pids, multi);
+    const fast = await timed('01' + pids.join('') + '1', pids, multi);
+    suffix = fast.ok && fast.ms <= base.ms + 20;
+    log(`Atajo "1": ${fast.ok ? `${Math.round(base.ms)} → ${Math.round(fast.ms)} ms` : 'no lo acepta'} → ${suffix ? 'lo uso' : 'no lo uso'}`);
   } catch (e) {
-    log('Consulta múltiple: ' + e.message);
-    $('dMulti').textContent = 'no';
-    return false;
+    log('Prueba de lectura rápida: ' + e.message);
   }
+  showFast();
+}
+
+function showFast() {
+  $('dMulti').textContent = [
+    multi ? 'varias PIDs por consulta' : 'una PID por consulta',
+    suffix ? 'atajo "1" activo' : 'sin atajo',
+  ].join(' · ');
 }
 
 function dropPid(pid) {
@@ -271,47 +295,68 @@ async function keepAwake() {
 document.addEventListener('visibilitychange', () => { if (running && document.visibilityState === 'visible') keepAwake(); });
 
 // ---------- ciclo de lectura ----------
+// Qué pedir en cada vuelta: RPM y velocidad siempre (es lo que se ve cambiar al manejar);
+// consumo y pedal una vuelta por medio; temperatura y carga cada 8 vueltas.
+const FAST = new Set(['0C', '0D']);
+function cycleList(n) {
+  const fast = pollList.filter((p) => FAST.has(p));
+  const mid = pollList.filter((p) => !FAST.has(p));
+  return [...fast, ...(n % 2 === 0 ? mid : []), ...(n % 8 === 0 ? slowList : [])];
+}
+
+// Comando OBD para una o varias PIDs. Con `suffix`, se agrega "1": el ELM327 contesta apenas
+// llega la primera respuesta en vez de esperar por si responde otra computadora del vehículo.
+const cmdFor = (pids) => '01' + pids.join('') + (suffix ? '1' : '');
+
 async function loop() {
   while (running) {
     const s = {};
-    const list = cycle++ % 8 === 0 ? [...pollList, ...slowList] : [...pollList];
+    const list = cycleList(cycle++);
+    const t0 = performance.now();
     if (multi) {
       // Hasta 6 PIDs por consulta: una sola ida y vuelta por Bluetooth.
       for (let i = 0; i < list.length && running; i += 6) {
         const chunk = list.slice(i, i + 6);
         try {
-          const vals = parseMulti(await elm.send('01' + chunk.join(''), 2500), chunk);
+          const vals = parseMulti(await elm.send(cmdFor(chunk), 2500), chunk);
           for (const pid of chunk) {
             if (vals[pid] != null) { s[PIDS[pid].key] = vals[pid]; noData[pid] = 0; } else noData[pid] = (noData[pid] || 0) + 1;
           }
-          rate.n += chunk.length;
+          rate.q++;
         } catch (e) {
           log(`multi ${chunk.join(',')}: ${e.message}`);
         }
       }
       if (s.rpm == null && (noData['0C'] || 0) >= 3) {
         multi = false;
+        suffix = false;
         log('Las consultas múltiples dejaron de responder: vuelvo a una PID por consulta');
+        showFast();
       }
-      if (!running) return;
-      process(s);
-      continue;
-    }
-    for (const pid of list) {
-      if (!running) return;
-      try {
-        const lines = await elm.send('01' + pid, 2000);
-        const v = decode(lines, pid);
-        if (v != null) { s[PIDS[pid].key] = v; noData[pid] = 0; } else {
-          noData[pid] = (noData[pid] || 0) + 1;
-          if (noData[pid] >= 6 && pid !== '0C' && pid !== '0D') dropPid(pid);
+    } else {
+      for (const pid of list) {
+        if (!running) return;
+        try {
+          const lines = await elm.send(cmdFor([pid]), 2000);
+          const v = decode(lines, pid);
+          if (v != null) { s[PIDS[pid].key] = v; noData[pid] = 0; } else {
+            noData[pid] = (noData[pid] || 0) + 1;
+            if (noData[pid] >= 6 && !FAST.has(pid)) dropPid(pid);
+            if (suffix && pid === '0C' && noData[pid] >= 3) {
+              suffix = false;
+              log('Sin respuesta con el atajo "1": lo desactivo');
+              showFast();
+            }
+          }
+          rate.q++;
+        } catch (e) {
+          log(`01${pid}: ${e.message}`);
         }
-        rate.n++;
-      } catch (e) {
-        log(`01${pid}: ${e.message}`);
       }
     }
     if (!running) return;
+    rate.ms += performance.now() - t0;
+    rate.n++;
     process(s);
   }
 }
@@ -330,7 +375,12 @@ function process(s) {
   noRpm = 0;
   lastDataAt = Date.now();
   // Los PIDs lentos (temperatura, carga) se leen cada pocos ciclos: usar el último valor.
-  for (const k of ['iat', 'load', 'fuelSys']) if (s[k] == null && live[k] != null) s[k] = live[k];
+  // Los datos que no se piden en cada vuelta (consumo, pedal, temperatura…) usan el último valor
+  // leído, si es reciente.
+  for (const k of Object.keys(s)) liveAt[k] = now;
+  for (const k of ['map', 'maf', 'throttle', 'pedalD', 'fuelRate', 'fuelSys', 'iat', 'load']) {
+    if (s[k] == null && live[k] != null && now - (liveAt[k] || 0) < 6000) s[k] = live[k];
+  }
 
   // Velocidad: OBD, o GPS si el vehículo no la informa (o informa 0 andando).
   const g = gpsNow();
@@ -465,13 +515,12 @@ function render(s, d) {
   adv.textContent = d.adv.msg;
   adv.className = 'advice ' + d.adv.color;
 
-  $('rpm').textContent = s.rpm != null ? Math.round(s.rpm / 10) * 10 : '--';
-  $('speed').textContent = s.speed ?? '--';
+  animTo('rpm', s.rpm);
+  animTo('speed', s.speed);
   $('speedLbl').textContent = speedSrc === 'GPS' ? 'km/h (GPS)' : 'km/h';
   $('gear').textContent = d.gear ? gearName(d.gear) : (s.speed > 3 ? 'N' : '-');
 
   const pct = (v) => `${Math.max(0, Math.min(100, (v / V.gaugeMax) * 100))}%`;
-  $('rpmNeedle').style.left = pct(s.rpm ?? 0);
   $('rpmZone').style.left = pct(d.zone.min);
   $('rpmZone').style.width = `calc(${pct(d.zone.max)} - ${pct(d.zone.min)})`;
   if (d.zone.power) $('zoneCap').textContent = `Zona de fuerza: ${d.zone.min}–${d.zone.max} rpm${cfg.loaded ? ' (cargado)' : ''}`;
@@ -485,9 +534,50 @@ function render(s, d) {
   $('mini').textContent = `Carga ${fmt(s.load)}% · Pedal ${fmt(d.pedal)}% · ${d.lph != null ? d.lph.toFixed(2) : '--'} L/h · ${d.method || '--'}`;
 
   const el = (performance.now() - rate.since) / 1000;
-  if (el > 3) { $('dRate').textContent = (rate.n / el).toFixed(1); rate = { n: 0, since: performance.now() }; }
+  if (el > 3) {
+    $('dRate').textContent = rate.n
+      ? `${(rate.n / el).toFixed(1)} por segundo · ${Math.round(rate.ms / rate.n)} ms por vuelta · ${(rate.q / el).toFixed(1)} consultas/s`
+      : '--';
+    rate = { n: 0, q: 0, ms: 0, since: performance.now() };
+  }
 }
 const fmt = (v) => (v == null ? '--' : Math.round(v));
+
+// ---------- animación suave de RPM, velocidad y aguja ----------
+// Entre una lectura y la siguiente los números avanzan de a poco, así no se ven saltos.
+const anim = { rpm: { cur: null }, speed: { cur: null } };
+let animFrame = null;
+function drawAnim(key) {
+  const a = anim[key];
+  if (key === 'rpm') {
+    $('rpm').textContent = a.cur == null ? '--' : Math.round(a.cur / 10) * 10;
+    $('rpmNeedle').style.left = `${Math.max(0, Math.min(100, ((a.cur ?? 0) / V.gaugeMax) * 100))}%`;
+  } else {
+    $('speed').textContent = a.cur == null ? '--' : Math.round(a.cur);
+  }
+}
+function animTo(key, val) {
+  const a = anim[key];
+  if (val == null || a.cur == null) { a.cur = val ?? null; a.to = a.cur; drawAnim(key); return; }
+  a.from = a.cur;
+  a.to = val;
+  a.t0 = performance.now();
+  // Dura lo mismo que una vuelta de lectura: llega al valor justo cuando llega el siguiente.
+  a.dur = Math.min(800, Math.max(100, rate.n ? rate.ms / rate.n : 300));
+  if (!animFrame) animFrame = requestAnimationFrame(stepAnim);
+}
+function stepAnim(now) {
+  let more = false;
+  for (const key of Object.keys(anim)) {
+    const a = anim[key];
+    if (a.cur == null || a.t0 == null) continue;
+    const p = Math.min(1, (now - a.t0) / a.dur);
+    a.cur = a.from + (a.to - a.from) * p;
+    drawAnim(key);
+    if (p < 1) more = true;
+  }
+  animFrame = more ? requestAnimationFrame(stepAnim) : null;
+}
 
 function renderNoEngine() {
   $('lamp').className = 'lamp off';
@@ -495,8 +585,8 @@ function renderNoEngine() {
   $('kmLUnit').textContent = 'km/L';
   $('advice').textContent = 'Motor apagado o sin respuesta';
   $('advice').className = 'advice';
-  $('rpm').textContent = '--';
-  $('speed').textContent = '--';
+  animTo('rpm', null);
+  animTo('speed', null);
   $('gear').textContent = '-';
   $('modeBadge').hidden = true;
 }

@@ -137,8 +137,13 @@ export class SimTransport {
   async write(str) {
     const cmd = str.trim().toUpperCase();
     this.step();
-    const reply = this.answer(cmd);
-    setTimeout(() => this.onData?.(reply + '\r\r>'), 25);
+    // Atajo "1" al final: el ELM contesta sin esperar a otras computadoras (más rápido).
+    let c = cmd;
+    let wait = 25;
+    if (/^01([0-9A-F]{2})+[1-9]$/.test(c)) c = c.slice(0, -1);
+    else if (c.startsWith('01')) wait += 90; // espera del ELM por más respuestas
+    const reply = this.answer(c);
+    setTimeout(() => this.onData?.(reply + '\r\r>'), wait);
   }
 
   /** Respuesta CAN a varias PIDs, en tramas numeradas como un ELM327 real. */

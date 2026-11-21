@@ -78,7 +78,7 @@ main { flex: 1; overflow-y: auto; }
 
 .rpmbar { position: relative; height: 34px; margin: 16px 0 4px; background: var(--panel); border-radius: 8px; }
 .rpmzone { position: absolute; top: 0; bottom: 14px; background: color-mix(in srgb, var(--green) 35%, transparent); border-radius: 6px; }
-.rpmneedle { position: absolute; top: -4px; bottom: 10px; width: 4px; margin-left: -2px; background: var(--text); border-radius: 2px; transition: left .25s; left: 0; }
+.rpmneedle { position: absolute; top: -4px; bottom: 10px; width: 4px; margin-left: -2px; background: var(--text); border-radius: 2px; left: 0; }
 .rpmticks { position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between; font-size: .65rem; color: var(--muted); padding: 0 2px; }
 .zonecap { text-align: center; color: var(--muted); font-size: .85rem; margin-bottom: 14px; }
 
