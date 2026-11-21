@@ -3,11 +3,12 @@ import { SimTransport } from './sim.js';
 import { Elm327 } from './elm327.js';
 import { PIDS, decode, readSupported } from './obd.js';
 import { DEFAULT_ENGINE, fuelLph, kmPerL } from './fuel.js';
-import { GearLearner, MD201_RATIOS } from './gears.js';
-import { RpmStats, BUCKET, MIN_BUCKET_SECONDS, DEFAULT_TOP_ZONE } from './stats.js';
+import { GearLearner } from './gears.js';
+import { RpmStats, BUCKET, MIN_BUCKET_SECONDS } from './stats.js';
+import { vehicle, DEFAULT_VEHICLE } from './vehicles.js';
 import { Analyzer } from './analyzer.js';
 import { parseCarScanner } from './import.js';
-import { HillDetector, powerAdvice, pedalPct, POWER } from './power.js';
+import { HillDetector, powerAdvice, pedalPct } from './power.js';
 import { advise, gearName } from './advise.js';
 
 const $ = (id) => document.getElementById(id);
@@ -18,22 +19,55 @@ const store = {
   set(k, v) { try { localStorage.setItem('obd.' + k, JSON.stringify(v)); } catch { /* sin almacenamiento */ } },
 };
 
-const cfg = Object.assign({
-  displacement: DEFAULT_ENGINE.displacement,
-  ve: DEFAULT_ENGINE.ve,
-  nGears: 5,
-  voice: true,
-  dfco: true,
-  corr: 1,
-  gearRatios: MD201_RATIOS,
-  loaded: false,
-}, store.get('cfg', {}));
+// ---------- vehículos ----------
+// Cada vehículo guarda su configuración, marchas y estadísticas por separado.
+(function migrate() {
+  // La primera versión guardaba todo sin vehículo: eso era la MD201.
+  if (store.get('cfg', null) && !store.get('cfg.md201', null)) {
+    for (const k of ['cfg', 'gears', 'stats', 'idleThr', 'fullThr']) {
+      const v = store.get(k, null);
+      if (v != null) store.set(`${k}.md201`, v);
+    }
+    const old = store.get('cfg', {});
+    if (old.voice != null) store.set('voice', old.voice);
+  }
+}());
 
-let gears = new GearLearner(cfg.nGears, store.get('gears', null), cfg.gearRatios);
-let stats = new RpmStats(store.get('stats', null));
-let analyzer = new Analyzer(gears, stats);
-let idleThrottle = store.get('idleThr', 100);
-let fullThrottle = store.get('fullThr', 0); // mariposa máxima vista (la MD201 llega a ~82 %)
+let V; // perfil del vehículo actual
+let cfg;
+let gears;
+let stats;
+let analyzer;
+let idleThrottle;
+let fullThrottle; // pedal/mariposa máxima vista (la MD201 llega a ~82 %)
+
+function loadVehicle(id) {
+  V = vehicle(id);
+  store.set('vehicle', V.id);
+  cfg = Object.assign({
+    displacement: V.displacement,
+    ve: DEFAULT_ENGINE.ve,
+    nGears: V.nGears,
+    dfco: true,
+    corr: 1,
+    gearRatios: V.gearRatios,
+    loaded: false,
+  }, store.get(`cfg.${V.id}`, {}));
+  cfg.voice = store.get('voice', true);
+  gears = new GearLearner(cfg.nGears, store.get(`gears.${V.id}`, null), cfg.gearRatios);
+  stats = new RpmStats(store.get(`stats.${V.id}`, null));
+  analyzer = new Analyzer(gears, stats);
+  idleThrottle = store.get(`idleThr.${V.id}`, 100);
+  fullThrottle = store.get(`fullThr.${V.id}`, 0);
+}
+
+function saveVehicleCfg() {
+  const { voice, ...rest } = cfg;
+  store.set(`cfg.${V.id}`, rest);
+  store.set('voice', voice);
+}
+
+loadVehicle(store.get('vehicle', DEFAULT_VEHICLE));
 const hill = new HillDetector();
 
 // ---------- estado ----------
@@ -48,6 +82,10 @@ let lastTs = 0;
 let lastSave = 0;
 let lastSpoken = { msg: '', at: 0 };
 let wakeLock = null;
+const gps = { speed: null, at: 0, watch: null };
+let useGps = false;
+let speedSrc = 'OBD';
+let zeroSpeedSince = null;
 let rate = { n: 0, since: performance.now() };
 const live = {};
 const trip = newTrip();
@@ -85,7 +123,7 @@ async function start(kind) {
       }
       transport = new BleTransport();
     } else {
-      transport = new SimTransport();
+      transport = new SimTransport(V.id);
     }
     setConn('busy', 'Conectando…');
     await transport.connect(log);
@@ -105,6 +143,9 @@ async function start(kind) {
     $('btnDemo').hidden = true;
     running = true;
     lastTs = 0;
+    useGps = !!V.gpsSpeed;
+    zeroSpeedSince = null;
+    startGps();
     keepAwake();
     loop();
   } catch (e) {
@@ -124,6 +165,7 @@ async function stop() {
   $('btnDemo').hidden = false;
   try { await wakeLock?.release(); } catch { /* nada */ }
   wakeLock = null;
+  stopGps();
   save(true);
 }
 
@@ -134,13 +176,19 @@ function setConn(state, name) {
 
 function buildPollList(sup) {
   const has = (p) => sup.size === 0 || sup.has(p);
-  pollList = ['0C', '0D'];
+  pollList = V.gpsSpeed ? ['0C'] : ['0C', '0D']; // el Homan informa velocidad 0: se usa GPS
   slowList = [];
   if (sup.has('5E')) pollList.push('5E');
-  if (sup.has('10')) pollList.push('10');
-  else if (has('0B')) { pollList.push('0B'); slowList.push('0F'); } // la MD201 no tiene MAF: usa MAP
-  if (has('11')) pollList.push('11');
-  if (sup.has('03')) pollList.push('03');
+  if (V.fuel === 'diesel') {
+    // Diésel: consumo directo (015E). El MAF y la mariposa del Homan dan valores fijos, no sirven.
+    if (!sup.has('5E')) log('La ECU no informa consumo (015E): sin km/L, solo consejos por RPM');
+    if (sup.has('49')) pollList.push('49'); else if (has('11')) pollList.push('11');
+  } else {
+    if (sup.has('10')) pollList.push('10');
+    else if (has('0B')) { pollList.push('0B'); slowList.push('0F'); } // la MD201 no tiene MAF: usa MAP
+    if (has('11')) pollList.push('11');
+    if (sup.has('03')) pollList.push('03');
+  }
   if (has('04')) slowList.push('04');
   noData = {};
   showPids();
@@ -150,7 +198,7 @@ function dropPid(pid) {
   pollList = pollList.filter((p) => p !== pid);
   slowList = slowList.filter((p) => p !== pid);
   log(`01${pid} no responde, lo dejo de pedir`);
-  if (pid === '10' && !pollList.includes('0B')) {
+  if (pid === '10' && V.fuel !== 'diesel' && !pollList.includes('0B')) {
     pollList.push('0B');
     slowList.push('0F');
     log('Sin MAF: calculo con MAP + temperatura de admisión');
@@ -160,6 +208,25 @@ function dropPid(pid) {
 
 function showPids() {
   $('dPids').textContent = pollList.map((p) => '01' + p).join(' ') + (slowList.length ? ' · lentos: ' + slowList.map((p) => '01' + p).join(' ') : '');
+}
+
+// ---------- GPS (para vehículos que no informan velocidad por OBD) ----------
+function startGps() {
+  if (transport?.gpsSpeed || !navigator.geolocation || gps.watch != null) return;
+  gps.watch = navigator.geolocation.watchPosition(
+    (p) => { if (p.coords.speed != null) { gps.speed = p.coords.speed * 3.6; gps.at = performance.now(); } },
+    (err) => { log('GPS: ' + err.message); if (V.gpsSpeed) toast('Activa la ubicación: este vehículo necesita el GPS para la velocidad', 7000); },
+    { enableHighAccuracy: true, maximumAge: 1000 },
+  );
+}
+function stopGps() {
+  if (gps.watch != null) navigator.geolocation?.clearWatch(gps.watch);
+  gps.watch = null;
+  gps.speed = null;
+}
+function gpsNow() {
+  if (transport?.gpsSpeed) return transport.gpsSpeed();
+  return performance.now() - gps.at < 4000 ? gps.speed : null;
 }
 
 async function keepAwake() {
@@ -199,19 +266,30 @@ function process(s) {
   // Los PIDs lentos (temperatura, carga) se leen cada pocos ciclos: usar el último valor.
   for (const k of ['iat', 'load', 'fuelSys']) if (s[k] == null && live[k] != null) s[k] = live[k];
 
-  if (s.throttle != null && s.rpm != null && s.rpm < 1100 && (s.speed ?? 0) < 3) {
-    idleThrottle = Math.min(idleThrottle, s.throttle);
-  }
-  if (s.throttle != null && (s.rpm ?? 0) > 1500) fullThrottle = Math.max(fullThrottle, s.throttle);
-  const pedal = pedalPct(s.throttle, idleThrottle, fullThrottle);
+  // Velocidad: OBD, o GPS si el vehículo no la informa (o informa 0 andando).
+  const g = gpsNow();
+  if (!useGps && s.speed === 0 && g != null && g > 10 && (s.rpm ?? 0) > V.idleRpm + 400) {
+    zeroSpeedSince ??= now;
+    if (now - zeroSpeedSince > 5000) { useGps = true; log('La ECU informa velocidad 0 andando: uso la del GPS'); }
+  } else if (!useGps) zeroSpeedSince = null;
+  if (useGps) s.speed = g != null ? Math.round(g) : null;
+  speedSrc = useGps ? 'GPS' : 'OBD';
 
-  const f = fuelLph(s, { ...DEFAULT_ENGINE, displacement: cfg.displacement, ve: cfg.ve });
+  // Pedal: en el Homan el pedal D (0149); en la MD201 la mariposa (0111).
+  const pedalRaw = V.pedalPid === '49' ? (s.pedalD ?? (V.fuel === 'diesel' ? null : s.throttle)) : s.throttle;
+  if (pedalRaw != null && s.rpm != null && s.rpm < V.idleRpm + 300 && (s.speed ?? 0) < 3) {
+    idleThrottle = Math.min(idleThrottle, pedalRaw);
+  }
+  if (pedalRaw != null && (s.rpm ?? 0) > V.idleRpm + 700) fullThrottle = Math.max(fullThrottle, pedalRaw);
+  const pedal = pedalPct(pedalRaw, idleThrottle, fullThrottle);
+
+  const f = fuelLph(s, { ...DEFAULT_ENGINE, fuel: V.fuel, displacement: cfg.displacement, ve: cfg.ve });
   let lph = f ? f.lph * cfg.corr : null;
   let fuelCut = false;
   if (cfg.dfco && f && f.method !== 'ECU (015E)' && (s.speed ?? 0) > 10 && (s.rpm ?? 0) > 1100) {
     // Corte de inyección: la ECU lo informa en 0103 (= 4) o, si no, acelerador en reposo.
-    const thrIdle = s.throttle != null && idleThrottle < 100 && s.throttle <= idleThrottle + 1.5;
-    if ((s.fuelSys === 4 && (s.throttle == null || thrIdle)) || (s.fuelSys == null && thrIdle && s.rpm > 1300)) {
+    const thrIdle = pedalRaw != null && idleThrottle < 100 && pedalRaw <= idleThrottle + 1.5;
+    if ((s.fuelSys === 4 && (pedalRaw == null || thrIdle)) || (s.fuelSys == null && thrIdle && s.rpm > V.idleRpm + 500)) {
       lph = 0; fuelCut = true;
     }
   }
@@ -223,11 +301,15 @@ function process(s) {
   let zone = zoneFor(gear);
   let adv = null;
   if (climbing) {
-    adv = powerAdvice({ ...s, gear }, gears, cfg.nGears, cfg.loaded);
-    if (adv) zone = { min: cfg.loaded ? POWER.minLoaded : POWER.min, max: POWER.max, power: true };
+    adv = powerAdvice({ ...s, gear }, gears, cfg.nGears, cfg.loaded, V.power);
+    if (adv) zone = { min: cfg.loaded ? V.power.minLoaded : V.power.min, max: V.power.max, power: true };
   }
-  if (!adv && (s.rpm ?? 0) > POWER.max) adv = powerAdvice({ ...s, gear }, gears, cfg.nGears, cfg.loaded);
-  if (!adv) adv = advise({ ...s, throttle: pedal, lph, gear, fuelCut }, zone, gears, cfg.nGears);
+  if (!adv && (s.rpm ?? 0) > V.power.max) adv = powerAdvice({ ...s, gear }, gears, cfg.nGears, cfg.loaded, V.power);
+  if (!adv) {
+    adv = advise({ ...s, throttle: pedal, lph, gear, fuelCut }, zone, gears, cfg.nGears, {
+      lugRpm: V.lugRpm, upMinRpm: V.upMinRpm, idleRpm: V.idleRpm, redMargin: V.fuel === 'diesel' ? 400 : 600,
+    });
+  }
 
   if (dt > 0 && dt < 5) {
     if (s.speed != null) trip.km += (s.speed * dt) / 3600;
@@ -238,7 +320,7 @@ function process(s) {
 
   const kml = kmPerL(s.speed, lph);
   if (tripLog.length < 30000) {
-    tripLog.push([new Date().toISOString(), r1(s.rpm), s.speed, r2(s.maf), r2(s.map), r2(lph), r2(kml), gear ?? '', r1(s.throttle), r1(s.load), adv.color, climbing ? 1 : 0]);
+    tripLog.push([new Date().toISOString(), r1(s.rpm), s.speed, r2(s.maf), r2(s.map), r2(lph), r2(kml), gear ?? '', r1(pedal), r1(s.load), adv.color, climbing ? 1 : 0, speedSrc]);
   }
 
   render(s, { lph, kml, gear, zone, adv, method: f?.method, pedal, climbing });
@@ -249,8 +331,8 @@ function process(s) {
 function zoneFor(gear) {
   const gz = gear ? stats.zone(gear) : null;
   if (gz?.learned) return gz;
-  if (gear && gear === cfg.nGears) return { ...DEFAULT_TOP_ZONE };
-  return stats.zone(0);
+  if (gear && gear === cfg.nGears) return { ...V.ecoTop, learned: false };
+  return stats.zone(0, 0.9, { ...V.eco, learned: false });
 }
 
 const r1 = (v) => (v == null ? '' : Math.round(v * 10) / 10);
@@ -258,10 +340,10 @@ const r2 = (v) => (v == null ? '' : Math.round(v * 100) / 100);
 
 function save(force) {
   lastSave = performance.now();
-  store.set('gears', gears.toJSON());
-  store.set('stats', stats.toJSON());
-  store.set('idleThr', idleThrottle);
-  store.set('fullThr', fullThrottle);
+  store.set(`gears.${V.id}`, gears.toJSON());
+  store.set(`stats.${V.id}`, stats.toJSON());
+  store.set(`idleThr.${V.id}`, idleThrottle);
+  store.set(`fullThr.${V.id}`, fullThrottle);
   if (force) renderZoneTab();
 }
 
@@ -281,7 +363,6 @@ function speak(adv) {
 }
 
 // ---------- pintar ----------
-const RPM_MAX = 6000;
 function render(s, d) {
   const lamp = $('lamp');
   lamp.className = 'lamp ' + d.adv.color;
@@ -300,9 +381,10 @@ function render(s, d) {
 
   $('rpm').textContent = s.rpm != null ? Math.round(s.rpm / 10) * 10 : '--';
   $('speed').textContent = s.speed ?? '--';
+  $('speedLbl').textContent = speedSrc === 'GPS' ? 'km/h (GPS)' : 'km/h';
   $('gear').textContent = d.gear ? gearName(d.gear) : (s.speed > 3 ? 'N' : '-');
 
-  const pct = (v) => `${Math.max(0, Math.min(100, (v / RPM_MAX) * 100))}%`;
+  const pct = (v) => `${Math.max(0, Math.min(100, (v / V.gaugeMax) * 100))}%`;
   $('rpmNeedle').style.left = pct(s.rpm ?? 0);
   $('rpmZone').style.left = pct(d.zone.min);
   $('rpmZone').style.width = `calc(${pct(d.zone.max)} - ${pct(d.zone.min)})`;
@@ -387,11 +469,11 @@ function download(name, text, type) {
 }
 $('btnCsv').onclick = () => {
   if (!tripLog.length) { toast('No hay datos de este viaje todavía'); return; }
-  const head = 'hora,rpm,kmh,maf_gs,map_kpa,l_h,km_l,marcha,acelerador,carga,color,modo_fuerza';
+  const head = 'hora,rpm,kmh,maf_gs,map_kpa,l_h,km_l,marcha,pedal,carga,color,modo_fuerza,fuente_velocidad';
   download(`viaje-${new Date().toISOString().slice(0, 16).replace(':', '')}.csv`, [head, ...tripLog.map((r) => r.join(','))].join('\n'), 'text/csv');
 };
 $('btnJson').onclick = () => {
-  download('obd-ahorro-datos.json', JSON.stringify({ cfg, gears: gears.toJSON(), peaks: gears.peaks, stats: stats.toJSON() }, null, 1), 'application/json');
+  download(`obd-ahorro-${V.id}.json`, JSON.stringify({ vehicle: V.id, cfg, gears: gears.toJSON(), peaks: gears.peaks, stats: stats.toJSON() }, null, 1), 'application/json');
 };
 $('btnWipe').onclick = () => {
   if (!confirm('¿Borrar todo lo aprendido (zonas y marchas)?')) return;
@@ -401,7 +483,7 @@ $('btnWipe').onclick = () => {
   save(true);
   toast('Datos borrados');
 };
-$('btnMd201').onclick = () => { $('cfgRatios').value = MD201_RATIOS.join(', '); saveCfg(); toast('Marchas de la MD201 cargadas'); };
+$('btnMd201').onclick = () => { $('cfgRatios').value = V.gearRatios.join(', '); saveCfg(); toast(`Marchas medidas del ${V.short} cargadas`); };
 $('btnLearned').onclick = () => {
   const d = gears.detect();
   if (d.length < 3) { toast('Todavía no hay suficientes datos para detectar las marchas'); return; }
@@ -441,16 +523,47 @@ function showLoaded() {
 }
 $('btnLoaded').onclick = () => {
   cfg.loaded = !cfg.loaded;
-  store.set('cfg', cfg);
+  saveVehicleCfg();
   showLoaded();
   toast(cfg.loaded ? 'Modo cargado: aviso para bajar de marcha antes en las subidas' : 'Modo normal');
 };
 showLoaded();
 
+function setGauge() {
+  const step = V.gaugeMax > 4000 ? 1000 : 500;
+  const ticks = [];
+  for (let r = 0; r <= V.gaugeMax; r += step) ticks.push(`<span>${r}</span>`);
+  $('rpmTicks').innerHTML = ticks.join('');
+  $('vehicleSel').value = V.id;
+}
+
+$('vehicleSel').onchange = (e) => {
+  if (running) {
+    e.target.value = V.id;
+    toast('Desconecta antes de cambiar de vehículo');
+    return;
+  }
+  save(true);
+  loadVehicle(e.target.value);
+  Object.assign(trip, newTrip());
+  tripLog.length = 0;
+  setGauge();
+  loadCfgForm();
+  showLoaded();
+  renderZoneTab();
+  toast(`Vehículo: ${V.name}`);
+};
+
 $('btnTripReset').onclick = () => { Object.assign(trip, newTrip()); tripLog.length = 0; };
 
 // ---------- ajustes ----------
 function loadCfgForm() {
+  const gas = V.fuel !== 'diesel';
+  $('engineWrap').hidden = !gas;
+  $('veWrap').hidden = !gas;
+  $('dfcoWrap').hidden = !gas;
+  $('cfgVehicleInfo').textContent = `${V.name} · ${gas ? 'gasolina' : 'diésel'} · ${V.nGears} marchas` +
+    (V.gpsSpeed ? ' · velocidad por GPS' : '');
   const preset = ['1.243', '1.493'].includes(String(cfg.displacement)) ? String(cfg.displacement) : 'custom';
   $('cfgEngine').value = preset;
   $('customDispWrap').hidden = preset !== 'custom';
@@ -476,7 +589,7 @@ function saveCfg() {
   cfg.gearRatios = ratios.length ? ratios : null;
   gears.preset = cfg.gearRatios ? [...cfg.gearRatios].sort((a, b) => a - b) : null;
   gears._recompute();
-  store.set('cfg', cfg);
+  saveVehicleCfg();
 }
 for (const id of ['cfgEngine', 'cfgDisp', 'cfgGears', 'cfgVoice', 'cfgDfco', 'cfgVe', 'cfgCorr', 'cfgRatios']) $(id).addEventListener('change', saveCfg);
 
@@ -502,6 +615,7 @@ $('btnConnect').onclick = () => start('ble');
 $('btnDemo').onclick = () => start('sim');
 
 loadCfgForm();
+setGauge();
 renderZoneTab();
 if (!BleTransport.available()) log('Web Bluetooth no disponible en este navegador. Usa Chrome en Android.');
 

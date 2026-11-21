@@ -2,7 +2,19 @@
 
 App web (PWA) para Android que lee el OBD2 de la camioneta en vivo y aprende **en qué rango de RPM rinde más el combustible**.
 
-Pensada para: **Changan MD201 2019 (gasolina, manual 5 marchas)** + adaptador **KONNWEI KW905** (ELM327 Bluetooth LE).
+Vehículos (se eligen en la pantalla Manejar; cada uno guarda sus datos por separado):
+
+| | Changan MD201 2019 | Sinotruk Homan 612i 2023 |
+|---|---|---|
+| Motor | Gasolina 1.2 (sin MAF) | Diésel Isuzu ~2.8 turbo |
+| Caja | Manual 5 marchas | Manual 6 marchas |
+| Consumo | Calculado con MAP | Informado por la ECU (015E) |
+| Velocidad | OBD (010D) | **GPS del teléfono** (la ECU informa 0) |
+| Pedal | Mariposa (0111) | Pedal D (0149) |
+| Zona de ahorro inicial | 1500–2500 rpm (5ª hasta 2900) | 1400–2200 rpm (6ª hasta 2300) |
+| Zona de fuerza | 3000–5500 rpm | 1600–3000 rpm |
+
+Adaptador: **KONNWEI KW905** (ELM327 Bluetooth LE).
 
 ## Qué hace
 
@@ -53,6 +65,7 @@ python3 -m http.server 8080   # y abrir http://localhost:8080 → botón Demo
 | `js/analyzer.js` | Marcha, velocidad pareja y qué muestras cuentan |
 | `js/import.js` | Importar registros de Car Scanner |
 | `js/power.js` | Detector de subidas y consejos del modo fuerza |
+| `js/vehicles.js` | Perfiles de vehículo (marchas, zonas, PIDs) |
 | `js/stats.js` | Rendimiento por rango de RPM y zona verde |
 | `js/advise.js` | Color del indicador y consejo de cambio |
 | `js/sim.js` | Simulador de ELM327 + camioneta |

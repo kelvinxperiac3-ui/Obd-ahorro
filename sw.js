@@ -1,8 +1,8 @@
 // Service worker: permite abrir la app sin señal (en la carretera).
-const CACHE = 'obd-ahorro-v3';
+const CACHE = 'obd-ahorro-v4';
 const FILES = [
   './', 'index.html', 'css/app.css', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png',
-  'js/app.js', 'js/ble.js', 'js/elm327.js', 'js/obd.js', 'js/fuel.js', 'js/gears.js', 'js/stats.js', 'js/advise.js', 'js/sim.js', 'js/analyzer.js', 'js/import.js', 'js/power.js',
+  'js/app.js', 'js/ble.js', 'js/elm327.js', 'js/obd.js', 'js/fuel.js', 'js/gears.js', 'js/stats.js', 'js/advise.js', 'js/sim.js', 'js/analyzer.js', 'js/import.js', 'js/power.js', 'js/vehicles.js',
 ];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));

@@ -24,7 +24,11 @@
     <!-- MANEJAR -->
     <section id="tab-drive" class="tab active">
       <div class="modebar">
-        <span id="modeBadge" class="badge" hidden>⛰ Modo fuerza</span>
+        <select id="vehicleSel" class="vsel" aria-label="Vehículo">
+          <option value="md201">MD201</option>
+          <option value="homan">Homan</option>
+        </select>
+        <span id="modeBadge" class="badge" hidden>⛰ Fuerza</span>
         <button id="btnLoaded" class="btn small toggle" type="button">Voy cargado</button>
       </div>
       <div id="lamp" class="lamp off">
@@ -35,14 +39,14 @@
 
       <div class="gauges">
         <div class="g"><div class="gv" id="rpm">--</div><div class="gl">RPM</div></div>
-        <div class="g"><div class="gv" id="speed">--</div><div class="gl">km/h</div></div>
+        <div class="g"><div class="gv" id="speed">--</div><div class="gl" id="speedLbl">km/h</div></div>
         <div class="g"><div class="gv" id="gear">-</div><div class="gl">Marcha</div></div>
       </div>
 
       <div class="rpmbar" aria-hidden="true">
         <div class="rpmzone" id="rpmZone"></div>
         <div class="rpmneedle" id="rpmNeedle"></div>
-        <div class="rpmticks"><span>0</span><span>1000</span><span>2000</span><span>3000</span><span>4000</span><span>5000</span><span>6000</span></div>
+        <div class="rpmticks" id="rpmTicks"></div>
       </div>
       <div class="zonecap" id="zoneCap">Zona verde: 1500–2500 rpm (inicial)</div>
 
@@ -87,6 +91,9 @@
     <!-- AJUSTES -->
     <section id="tab-cfg" class="tab">
       <h2>Ajustes</h2>
+      <p class="lead" id="cfgVehicleInfo"></p>
+      <p class="hint">Cada vehículo guarda sus ajustes y lo aprendido por separado. Se cambia con el selector de la pantalla Manejar.</p>
+      <div id="engineWrap">
       <label class="field">Motor
         <select id="cfgEngine">
           <option value="1.243">Changan MD201 1.2 L (1243 cc)</option>
@@ -97,19 +104,20 @@
       <label class="field" id="customDispWrap" hidden>Cilindrada (litros)
         <input id="cfgDisp" type="number" step="0.001" min="0.6" max="8">
       </label>
+      </div>
       <label class="field">Marchas de la caja
         <input id="cfgGears" type="number" min="4" max="6" step="1">
       </label>
-      <label class="field">Relaciones de marcha (km/h a 1000 rpm, de 1ª a última)
+      <label class="field">Relaciones de marcha (km/h a 1000 rpm). Puedes poner solo las más altas: las demás se aprenden.
         <input id="cfgRatios" inputmode="decimal" placeholder="vacío = aprender solas">
       </label>
       <div class="row-btns tight">
-        <button id="btnMd201" class="btn small" type="button">Usar las de la MD201</button>
+        <button id="btnMd201" class="btn small" type="button">Usar las medidas</button>
         <button id="btnLearned" class="btn small" type="button">Usar las detectadas</button>
       </div>
       <label class="check"><input id="cfgVoice" type="checkbox"> Avisos por voz (“Sube a 3ª”)</label>
-      <label class="check"><input id="cfgDfco" type="checkbox"> Detectar freno motor (consumo 0 al soltar el acelerador en marcha)</label>
-      <label class="field">Eficiencia volumétrica (solo si el motor no tiene MAF)
+      <label class="check" id="dfcoWrap"><input id="cfgDfco" type="checkbox"> Detectar freno motor (consumo 0 al soltar el acelerador en marcha)</label>
+      <label class="field" id="veWrap">Eficiencia volumétrica (solo si el motor no tiene MAF)
         <input id="cfgVe" type="number" step="0.01" min="0.5" max="1.1">
       </label>
       <label class="field">Factor de corrección de consumo

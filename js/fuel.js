@@ -21,6 +21,8 @@ export function mafFromMap(rpm, mapKpa, iatC, displacementL, ve) {
  */
 export function fuelLph(s, cfg = DEFAULT_ENGINE) {
   if (s.fuelRate != null) return { lph: s.fuelRate, method: 'ECU (015E)' };
+  // En diésel la mezcla no es fija (14.7): sin el dato de la ECU no hay cálculo confiable.
+  if (cfg.fuel === 'diesel') return null;
   let maf = s.maf;
   let method = 'MAF';
   if (maf == null && s.map != null && s.rpm != null) {

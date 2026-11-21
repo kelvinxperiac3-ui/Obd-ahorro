@@ -10,6 +10,7 @@ export const PIDS = {
   '0F': { key: 'iat', n: 1, f: ([a]) => a - 40 },
   '10': { key: 'maf', n: 2, f: ([a, b]) => (a * 256 + b) / 100 },
   '11': { key: 'throttle', n: 1, f: ([a]) => (a * 100) / 255 },
+  '49': { key: 'pedalD', n: 1, f: ([a]) => (a * 100) / 255 },
   '5E': { key: 'fuelRate', n: 2, f: ([a, b]) => (a * 256 + b) / 20 },
 };
 

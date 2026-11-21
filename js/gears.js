@@ -61,7 +61,14 @@ export class GearLearner {
   }
 
   _recompute() {
-    this.peaks = this.preset || this.detect();
+    if (this.preset && this.preset.length < this.nGears) {
+      // Preset parcial (ej. solo las marchas altas medidas): completar con las detectadas más cortas.
+      const lo = this.preset[0] * 0.9;
+      const extra = this.detect().filter((p) => p < lo).slice(-(this.nGears - this.preset.length));
+      this.peaks = [...extra, ...this.preset];
+    } else {
+      this.peaks = this.preset || this.detect();
+    }
     // La 1ª casi no se usa y a veces no forma pico: si faltan marchas, se asume
     // que faltan las de abajo (la más larga detectada es la última marcha).
     this.offset = Math.max(0, this.nGears - this.peaks.length);

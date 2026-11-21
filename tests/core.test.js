@@ -187,3 +187,54 @@ test('consejo de fuerza en la MD201', () => {
   // pasado de vueltas
   assert.equal(powerAdvice({ rpm: 5800, speed: 64, gear: 2 }, g, 5).shift, 3);
 });
+
+import { VEHICLES } from '../js/vehicles.js';
+
+test('Homan: preset parcial (5ª y 6ª) y el resto se aprende', () => {
+  const g = new GearLearner(6, null, VEHICLES.homan.gearRatios);
+  assert.equal(g.gearFor(80, 2220), 6);
+  assert.equal(g.gearFor(80, 2807), 5);
+  assert.equal(g.ratioOf(4), null);
+  // maneja en 3ª y 4ª: aparecen
+  for (let i = 0; i < 2000; i++) {
+    const r = i % 2 ? 22.5 : 17.5; const rpm = 1300 + Math.random() * 1200;
+    g.add((r * rpm) / 1000, rpm);
+  }
+  g._recompute();
+  assert.equal(g.gearFor(45, 2000), 4);
+  assert.equal(g.gearFor(35, 2000), 3);
+  assert.equal(g.gearFor(80, 2220), 6);
+});
+
+test('diésel: solo consumo de la ECU, nunca la fórmula de gasolina', () => {
+  assert.equal(fuelLph({ maf: 179 }, { fuel: 'diesel' }), null);
+  assert.equal(fuelLph({ fuelRate: 14.4, maf: 179 }, { fuel: 'diesel' }).lph, 14.4);
+});
+
+test('importa registro del camión usando la velocidad GPS', () => {
+  const csv = [
+    '"SECONDS";"PID";"VALUE";"UNITS";"LATITUDE";"LONGTITUDE";',
+    '"10.0";"Velocidad (GPS)";"78.0";"km/h";"-31.3";"-71.5";',
+    '"10.1";"Velocidad del vehículo";"0";"km/h";"-31.3";"-71.5";',
+    '"10.2";"Consumo del combustible del motor";"14.4";"L/h";"-31.3";"-71.5";',
+    '"10.3";"Revoluciones del motor";"2164";"rpm";"-31.3";"-71.5";',
+  ].join('\n');
+  const [r] = parseCarScanner(csv);
+  assert.equal(r.speed, 78);
+  assert.equal(r.speedSrc, 'GPS');
+  assert.equal(r.lph, 14.4);
+});
+
+test('consejos del diésel con su zona', () => {
+  const V = VEHICLES.homan;
+  const g = new GearLearner(6, null, [7.5, 12.5, 17.5, 22.5, 28.5, 36.0]);
+  const opts = { lugRpm: V.lugRpm, upMinRpm: V.upMinRpm, idleRpm: V.idleRpm, redMargin: 400 };
+  // 5ª a 80 km/h ≈ 2800 rpm: subir a 6ª (≈2220)
+  const a = advise({ rpm: 2807, speed: 80, gear: 5, load: 40, throttle: 30 }, V.eco, g, 6, opts);
+  assert.equal(a.shift, 6);
+  // 6ª a 70 ≈ 1945 rpm: zona verde
+  assert.equal(advise({ rpm: 1945, speed: 70, gear: 6, load: 50, throttle: 40 }, V.ecoTop, g, 6, opts).color, 'green');
+  // subida: 6ª a 1500 rpm → bajar a 5ª (≈1900)
+  const p = powerAdvice({ rpm: 1500, speed: 54, gear: 6 }, g, 6, false, V.power);
+  assert.equal(p.shift, 5);
+});

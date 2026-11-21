@@ -4,7 +4,9 @@
 const NAMES = [
   [/^Revoluciones del motor$|^Engine RPM$/i, 'rpm'],
   [/^Velocidad del veh[ií]culo$|^Vehicle speed$/i, 'speed'],
-  [/^Consumo instant[aá]neo de combustible \(l\/h\)$|^Fuel rate \(l\/h\)$|^Instant fuel consumption \(l\/h\)$/i, 'lph'],
+  [/^Consumo instant[aá]neo de combustible \(l\/h\)$|^Fuel rate \(l\/h\)$|^Instant fuel consumption \(l\/h\)$|^Consumo del combustible del motor$|^Engine fuel rate$/i, 'lph'],
+  [/^Velocidad \(GPS\)$|^Speed \(GPS\)$/i, 'gps'],
+  [/^Posici[oó]n del pedal del acelerador D$|^Accelerator pedal position D$/i, 'pedalD'],
   [/colector de admisi[oó]n$|^Intake manifold (absolute )?pressure$/i, 'map'],
   [/^Posici[oó]n de la mariposa|^Throttle position/i, 'thr'],
   [/^Caudal de aire|^MAF/i, 'maf'],
@@ -36,8 +38,13 @@ export function parseCarScanner(text) {
     if (key === 'map') v = toKpa(v, f[3] || '');
     if (key === 'rpm') {
       const r = { t, rpm: v };
-      for (const k of ['speed', 'lph', 'map', 'thr', 'maf', 'eco']) {
-        if (last[k] && t - last[k].t < 2.5) r[k] = last[k].v;
+      for (const k of ['speed', 'lph', 'map', 'thr', 'maf', 'eco', 'gps', 'pedalD']) {
+        if (last[k] && t - last[k].t < (k === 'gps' ? 4 : 2.5)) r[k] = last[k].v;
+      }
+      // Algunos camiones informan velocidad 0 por OBD: usar la del GPS del teléfono.
+      if ((r.speed == null || (r.speed === 0 && v > 1000)) && r.gps != null && r.gps > 3) {
+        r.speed = r.gps;
+        r.speedSrc = 'GPS';
       }
       rows.push(r);
     } else {

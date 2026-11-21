@@ -59,22 +59,23 @@ export class HillDetector {
  * Consejo en modo fuerza. Devuelve null si no aplica (se usa el consejo normal).
  * s: { rpm, speed, gear }
  */
-export function powerAdvice(s, gears, nGears, loaded = false) {
+export function powerAdvice(s, gears, nGears, loaded = false, P = POWER) {
   const g = s.gear;
   if (s.rpm == null || !g) return null;
-  const min = loaded ? POWER.minLoaded : POWER.min;
+  const min = loaded ? P.minLoaded : P.min;
+  const drop = Math.round((P.max - P.min) / 4); // margen para pasar de amarillo a rojo
 
-  if (s.rpm > POWER.max) {
+  if (s.rpm > P.max) {
     return g < nGears
       ? { color: 'red', msg: `Pasado de vueltas: sube a ${gearName(g + 1)}`, shift: g + 1, power: true }
       : { color: 'red', msg: 'Pasado de vueltas: suelta un poco', power: true };
   }
   if (s.rpm < min && g > 1) {
     const down = gears?.rpmInGear(s.speed, g - 1);
-    if (down && down <= POWER.targetMax) {
-      return { color: s.rpm < min - 600 ? 'red' : 'yellow', msg: `Baja a ${gearName(g - 1)} para tener fuerza`, shift: g - 1, power: true };
+    if (down && down <= P.targetMax) {
+      return { color: s.rpm < min - drop ? 'red' : 'yellow', msg: `Baja a ${gearName(g - 1)} para tener fuerza`, shift: g - 1, power: true };
     }
-    if (down && down <= POWER.max) {
+    if (down && down <= P.max) {
       return { color: 'yellow', msg: `Baja a ${gearName(g - 1)} (quedará alto de vueltas)`, shift: g - 1, power: true };
     }
   }
