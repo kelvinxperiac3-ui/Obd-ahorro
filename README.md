@@ -52,6 +52,26 @@ Adaptador: **KONNWEI KW905** (ELM327 Bluetooth LE).
 
 Si no conecta o no lee datos, mira la pestaña **Ajustes → Diagnóstico**: ahí se ve todo lo que responde el adaptador.
 
+## App Android (segundo plano)
+
+La misma app empaquetada con **Capacitor**, para que siga funcionando con la pantalla apagada o
+usando otra app (Waze, Maps):
+
+- Bluetooth LE nativo (`@capacitor-community/bluetooth-le`), voz nativa y GPS nativo.
+- Servicio en primer plano (`KeepAliveService`) con notificación fija que muestra RPM, velocidad y km/L,
+  y retiene la CPU mientras está conectada.
+- Exportar abre "Compartir"; **Importar respaldo** trae los datos aprendidos desde la versión de Chrome.
+- Avisa en Ajustes cuando hay un APK nuevo.
+
+**Instalar:** descargar el `.apk` de la última versión en *Releases* del repositorio y abrirlo
+(Android pedirá permitir "instalar apps de fuentes desconocidas" para el navegador o Archivos).
+
+**Compilación:** GitHub Actions (`.github/workflows/android.yml`) compila y publica el APK en cada
+cambio de la app. La llave de firma no está en el repositorio: se toma del secreto
+`ANDROID_KEYSTORE_B64` / `ANDROID_KEYSTORE_PASSWORD` si existe, o se crea una vez y se guarda en la
+caché de Actions. Mientras sea la misma llave, cada APK se instala encima del anterior sin perder datos.
+A mano: `npm ci && npm run cap:sync && cd android && ./gradlew assembleRelease` (JDK 21 y SDK de Android).
+
 ## Desarrollo
 
 No necesita compilación: HTML + JavaScript (módulos ES).
@@ -73,6 +93,7 @@ python3 -m http.server 8080   # y abrir http://localhost:8080 → botón Demo
 | `js/power.js` | Detector de subidas y consejos del modo fuerza |
 | `js/vehicles.js` | Perfiles de vehículo (marchas, zonas, PIDs) |
 | `js/tank.js` | Consumo real tanque lleno a tanque lleno y factor de corrección |
+| `js/native.js` | Puente con Android: Bluetooth, voz, GPS, segundo plano, compartir |
 | `js/stats.js` | Rendimiento por rango de RPM y zona verde |
 | `js/advise.js` | Color del indicador y consejo de cambio |
 | `js/sim.js` | Simulador de ELM327 + camioneta |

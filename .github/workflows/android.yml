@@ -1,0 +1,103 @@
+# Compila la app Android (APK) y la publica en "Releases" del repositorio.
+name: APK Android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'js/**'
+      - 'css/**'
+      - 'index.html'
+      - 'android/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'capacitor.config.json'
+      - 'scripts/**'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Versión de la app
+        run: echo "APP_VERSION=$(grep -oP "APP_VERSION = '\K[^']+" js/app.js)" >> "$GITHUB_ENV"
+
+      - name: Dependencias y web
+        run: |
+          npm ci
+          npm test
+          npm run build:web
+          npx cap sync android
+
+      # Llave de firma estable (nunca en el repositorio):
+      #  - si existe el secreto ANDROID_KEYSTORE_B64 (+ ANDROID_KEYSTORE_PASSWORD), se usa ese;
+      #  - si no, se crea una la primera vez y se guarda en la caché de Actions.
+      - name: Caché de la llave de firma
+        uses: actions/cache@v4
+        with:
+          path: ~/.obd-firma
+          key: obd-firma-v1
+
+      - name: Llave de firma
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          mkdir -p ~/.obd-firma
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/obd.keystore"
+            PASS="$KS_PASS"
+            echo "Firma: secreto del repositorio"
+          else
+            if [ ! -f ~/.obd-firma/obd.keystore ]; then
+              head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' > ~/.obd-firma/pass
+              keytool -genkeypair -keystore ~/.obd-firma/obd.keystore -alias obd-ahorro -keyalg RSA -keysize 2048 \
+                -validity 10000 -storepass "$(cat ~/.obd-firma/pass)" -keypass "$(cat ~/.obd-firma/pass)" \
+                -dname "CN=OBD Ahorro, O=Personal, C=CL"
+              echo "Firma: llave nueva creada en la caché"
+            else
+              echo "Firma: llave de la caché"
+            fi
+            cp ~/.obd-firma/obd.keystore "$RUNNER_TEMP/obd.keystore"
+            PASS="$(cat ~/.obd-firma/pass)"
+          fi
+          echo "::add-mask::$PASS"
+          echo "OBD_KEYSTORE_FILE=$RUNNER_TEMP/obd.keystore" >> "$GITHUB_ENV"
+          echo "OBD_KEYSTORE_PASSWORD=$PASS" >> "$GITHUB_ENV"
+
+      - name: Compilar APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Publicar en Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK="obd-ahorro-${APP_VERSION}.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$APK"
+          gh release create "v${APP_VERSION}-${GITHUB_RUN_NUMBER}" "$APK" \
+            --title "OBD Ahorro ${APP_VERSION}" \
+            --notes "APK para Android (compilación ${GITHUB_RUN_NUMBER}). Se instala encima de la versión anterior sin borrar los datos." \
+            --latest

@@ -13,7 +13,10 @@ import { advise, gearName } from './advise.js';
 import { newTank, addDriving, registerFill, undoFill, suggestedFactor } from './tank.js';
 
 const $ = (id) => document.getElementById(id);
-export const APP_VERSION = '2026-11-22d';
+// Dentro de la app Android (APK) se usan Bluetooth, voz, GPS y segundo plano nativos.
+const NATIVE = !!window.Capacitor?.isNativePlatform?.();
+const nat = NATIVE ? await import('./native.js') : null;
+export const APP_VERSION = '2026-11-22e';
 // Si la página (HTML) es de otra versión que este código, se recarga una vez sin caché.
 if (document.documentElement.dataset.v !== APP_VERSION) {
   let tried = null;
@@ -99,6 +102,7 @@ let useGps = false;
 let speedSrc = 'OBD';
 let zeroSpeedSince = null;
 let noRpm = 0;
+let lastNotif = 0;
 let reconnecting = false;
 let hiddenAt = null;
 let multi = false; // varias PIDs por consulta (CAN)
@@ -148,7 +152,9 @@ function friendlyError(e) {
 async function start(kind) {
   if (running) { await stop(); return; }
   try {
-    if (kind === 'ble') {
+    if (kind === 'ble' && nat) {
+      transport = new nat.NativeBleTransport();
+    } else if (kind === 'ble') {
       if (!BleTransport.available()) {
         toast('Este navegador no tiene Web Bluetooth. Abre la app en Chrome para Android, con Bluetooth y ubicación activados.', 8000);
         return;
@@ -186,6 +192,10 @@ async function start(kind) {
     zeroSpeedSince = null;
     startGps();
     keepAwake();
+    if (nat) {
+      const ok = await nat.background.start(`Conectado a ${transport.name}`);
+      log(ok ? 'Segundo plano activo: sigue leyendo con la pantalla apagada' : 'No pude activar el segundo plano');
+    }
     loop();
   } catch (e) {
     log('ERROR: ' + (e.name ? e.name + ': ' : '') + (e.message || e));
@@ -204,6 +214,7 @@ async function stop() {
   $('btnDemo').hidden = false;
   try { await wakeLock?.release(); } catch { /* nada */ }
   wakeLock = null;
+  if (nat) { nat.background.stop(); nat.background.keepScreenOn(false); }
   stopGps();
   multi = false;
   renderNoEngine();
@@ -325,7 +336,16 @@ function showPids() {
 
 // ---------- GPS (para vehículos que no informan velocidad por OBD) ----------
 function startGps() {
-  if (transport?.gpsSpeed || !navigator.geolocation || gps.watch != null) return;
+  if (transport?.gpsSpeed || gps.watch != null) return;
+  if (nat) {
+    gps.watch = 'pendiente';
+    nat.watchGps(
+      (kmh) => { gps.speed = kmh; gps.at = performance.now(); },
+      (err) => { log('GPS: ' + (err?.message || err)); if (V.gpsSpeed) toast('Activa la ubicación: este vehículo necesita el GPS para la velocidad', 7000); },
+    ).then((id) => { gps.watch = id; }).catch((e) => { gps.watch = null; log('GPS: ' + e.message); });
+    return;
+  }
+  if (!navigator.geolocation) return;
   gps.watch = navigator.geolocation.watchPosition(
     (p) => { if (p.coords.speed != null) { gps.speed = p.coords.speed * 3.6; gps.at = performance.now(); } },
     (err) => { log('GPS: ' + err.message); if (V.gpsSpeed) toast('Activa la ubicación: este vehículo necesita el GPS para la velocidad', 7000); },
@@ -333,7 +353,8 @@ function startGps() {
   );
 }
 function stopGps() {
-  if (gps.watch != null) navigator.geolocation?.clearWatch(gps.watch);
+  if (nat) nat.clearGps(gps.watch);
+  else if (gps.watch != null) navigator.geolocation?.clearWatch(gps.watch);
   gps.watch = null;
   gps.speed = null;
 }
@@ -343,13 +364,14 @@ function gpsNow() {
 }
 
 async function keepAwake() {
+  if (nat) { nat.background.keepScreenOn(true); return; }
   try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* opcional */ }
 }
 document.addEventListener('visibilitychange', () => {
   if (!running) return;
   if (document.visibilityState === 'hidden') {
     hiddenAt = Date.now();
-    log('App en segundo plano: Chrome puede pausar la lectura');
+    log(nat ? 'App en segundo plano: sigue leyendo' : 'App en segundo plano: Chrome puede pausar la lectura');
     return;
   }
   keepAwake();
@@ -554,6 +576,10 @@ function process(s) {
   }
 
   render(s, { lph, kml, gear, zone, adv, method: f?.method, pedal, climbing });
+  if (nat && now - lastNotif > 5000) {
+    lastNotif = now;
+    nat.background.update(`${Math.round(s.rpm / 10) * 10} rpm · ${s.speed ?? '--'} km/h · ${kml != null ? (kml >= 99 ? '∞' : kml.toFixed(1)) + ' km/L' : 'detenido'} · ${adv.msg}`);
+  }
   speak(adv);
   if (now - lastSave > 10000) save();
 }
@@ -597,8 +623,19 @@ function save(force) {
 }
 
 // ---------- voz ----------
+function say(text) {
+  if (nat) { nat.speak(text); return; }
+  if (!('speechSynthesis' in window)) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'es-ES';
+  speechSynthesis.speak(u);
+}
+function hush() {
+  if (nat) nat.stopSpeaking();
+  else if ('speechSynthesis' in window) speechSynthesis.cancel();
+}
 function speak(adv) {
-  if (!cfg.voice || !adv.shift || !('speechSynthesis' in window)) return;
+  if (!cfg.voice || !adv.shift || (!nat && !('speechSynthesis' in window))) return;
   const now = Date.now();
   if (adv.msg === lastSpoken.msg && now - lastSpoken.at < (adv.power ? 10000 : 20000)) return;
   if (now - lastSpoken.at < (adv.power ? 3000 : 6000)) return;
@@ -606,9 +643,7 @@ function speak(adv) {
   const ORD = ['', 'primera', 'segunda', 'tercera', 'cuarta', 'quinta', 'sexta'];
   const m = /(Sube|Baja|sube|baja) a (\d)/.exec(adv.msg);
   const text = m ? `${m[1][0].toUpperCase()}${m[1].slice(1)} a ${ORD[m[2]]}` : adv.msg;
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = 'es-ES';
-  speechSynthesis.speak(u);
+  say(text);
 }
 
 // ---------- pintar ----------
@@ -769,6 +804,10 @@ function renderSpeedTab() {
 
 // ---------- exportar ----------
 function download(name, text, type) {
+  if (nat) {
+    nat.shareFile(name, text).catch((e) => toast('No pude compartir: ' + e.message));
+    return;
+  }
   const blob = new Blob([text], { type });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -781,8 +820,47 @@ $('btnCsv').onclick = () => {
   const head = 'hora,rpm,kmh,maf_gs,map_kpa,l_h,km_l,marcha,pedal,carga,color,modo_fuerza,fuente_velocidad';
   download(`viaje-${new Date().toISOString().slice(0, 16).replace(':', '')}.csv`, [head, ...tripLog.map((r) => r.join(','))].join('\n'), 'text/csv');
 };
+// Respaldo completo (los dos vehículos): sirve para pasar los datos de Chrome a la app
+// Android, o a otro teléfono.
+const DATA_KEYS = ['cfg', 'gears', 'stats', 'tank', 'idleThr', 'fullThr'];
 $('btnJson').onclick = () => {
-  download(`obd-ahorro-${V.id}.json`, JSON.stringify({ vehicle: V.id, cfg, gears: gears.toJSON(), peaks: gears.peaks, stats: stats.toJSON() }, null, 1), 'application/json');
+  save();
+  const vehicles = {};
+  for (const id of ['md201', 'homan']) {
+    const v = {};
+    for (const k of DATA_KEYS) { const x = store.get(`${k}.${id}`, null); if (x != null) v[k] = x; }
+    if (Object.keys(v).length) vehicles[id] = v;
+  }
+  const data = { app: 'obd-ahorro', format: 2, version: APP_VERSION, date: new Date().toISOString(), voice: cfg.voice, vehicle: V.id, vehicles };
+  download(`obd-ahorro-datos-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(data), 'application/json');
+};
+$('fileData').onchange = async (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file) return;
+  if (running) { toast('Desconecta antes de importar datos'); return; }
+  try {
+    const d = JSON.parse(await file.text());
+    let vehicles = d.vehicles;
+    if (!vehicles && d.vehicle && d.stats) vehicles = { [d.vehicle]: { cfg: d.cfg, gears: d.gears, stats: d.stats } }; // formato antiguo
+    if (!vehicles || !Object.keys(vehicles).length) throw new Error('el archivo no trae datos de la app');
+    const names = Object.keys(vehicles).join(' y ');
+    if (!confirm(`¿Reemplazar los datos de ${names} con los del archivo?`)) return;
+    for (const [id, v] of Object.entries(vehicles)) {
+      for (const k of DATA_KEYS) if (v[k] != null) store.set(`${k}.${id}`, v[k]);
+    }
+    if (d.voice != null) store.set('voice', d.voice);
+    loadVehicle(d.vehicle && vehicles[d.vehicle] ? d.vehicle : V.id);
+    setGauge();
+    loadCfgForm();
+    showLoaded();
+    showVoice();
+    renderZoneTab();
+    renderTankTab();
+    toast(`Datos importados: ${names}`);
+  } catch (err) {
+    toast('No pude importar: ' + err.message, 7000);
+  }
 };
 $('btnWipe').onclick = () => {
   if (!confirm('¿Borrar todo lo aprendido (zonas y marchas)?')) return;
@@ -929,14 +1007,8 @@ $('btnVoice').onclick = () => {
   cfg.voice = !cfg.voice;
   saveVehicleCfg();
   showVoice();
-  if ('speechSynthesis' in window) {
-    speechSynthesis.cancel(); // corta de inmediato si estaba hablando
-    if (cfg.voice) {
-      const u = new SpeechSynthesisUtterance('Avisos de voz activados');
-      u.lang = 'es-ES';
-      speechSynthesis.speak(u);
-    }
-  }
+  hush(); // corta de inmediato si estaba hablando
+  if (cfg.voice) say('Avisos de voz activados');
   toast(cfg.voice ? 'Avisos por voz activados' : 'Avisos por voz silenciados', 2000);
 };
 
@@ -1009,7 +1081,7 @@ function saveCfg() {
   const ng = Math.min(6, Math.max(4, Number($('cfgGears').value) || 5));
   if (ng !== cfg.nGears) { cfg.nGears = ng; gears.nGears = ng; gears._recompute(); }
   cfg.voice = $('cfgVoice').checked;
-  if (!cfg.voice && 'speechSynthesis' in window) speechSynthesis.cancel();
+  if (!cfg.voice) hush();
   setTimeout(showVoice);
   cfg.dfco = $('cfgDfco').checked;
   cfg.ve = Number($('cfgVe').value) || DEFAULT_ENGINE.ve;
@@ -1044,14 +1116,23 @@ document.querySelectorAll('.tabs button').forEach((b) => {
 $('btnConnect').onclick = () => start('ble');
 $('btnDemo').onclick = () => start('sim');
 
-$('dVersion').textContent = APP_VERSION;
+$('dVersion').textContent = APP_VERSION + (NATIVE ? ' (app Android)' : ' (navegador)');
+if (nat) {
+  nat.checkApkUpdate(APP_VERSION).then((u) => {
+    if (!u) return;
+    const box = $('apkUpdate');
+    box.innerHTML = `Hay una versión nueva de la app (<b>${u.version}</b>). <a href="${u.url}" target="_blank" rel="noopener">Descargar APK</a>`;
+    box.hidden = false;
+    toast(`Hay una versión nueva de la app (${u.version}): está en Ajustes`, 6000);
+  });
+}
 loadCfgForm();
 setGauge();
 renderZoneTab();
 renderTankTab();
 if (!BleTransport.available()) log('Web Bluetooth no disponible en este navegador. Usa Chrome en Android.');
 
-if ('serviceWorker' in navigator && location.protocol === 'https:') {
+if (!NATIVE && 'serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').then((reg) => reg.update()).catch(() => {});
   // Si llega una versión nueva, recargar (solo si no está conectado, para no cortar un viaje).
   let reloaded = false;

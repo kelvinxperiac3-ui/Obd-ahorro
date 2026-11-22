@@ -1,0 +1,18 @@
+{
+  "appId": "cl.obdahorro.app",
+  "appName": "OBD Ahorro",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#0f1114"
+  },
+  "plugins": {
+    "BluetoothLe": {
+      "displayStrings": {
+        "scanning": "Buscando adaptador…",
+        "cancel": "Cancelar",
+        "availableDevices": "Adaptadores disponibles",
+        "noDeviceFound": "No encontré ningún adaptador"
+      }
+    }
+  }
+}

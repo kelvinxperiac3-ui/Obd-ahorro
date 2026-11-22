@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">OBD Ahorro</string>
+    <string name="title_activity_main">OBD Ahorro</string>
+    <string name="package_name">cl.obdahorro.app</string>
+    <string name="custom_url_scheme">cl.obdahorro.app</string>
+</resources>

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="es" data-v="2026-11-22d">
+<html lang="es" data-v="2026-11-22e">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -82,7 +82,9 @@
 
       <div class="row-btns">
         <button id="btnCsv" class="btn">Exportar viaje (CSV)</button>
-        <button id="btnJson" class="btn">Exportar datos (JSON)</button>
+        <button id="btnJson" class="btn">Exportar todos los datos (respaldo)</button>
+        <label class="btn" for="fileData">Importar respaldo</label>
+        <input id="fileData" type="file" accept=".json,application/json" hidden>
         <label class="btn" for="fileImport">Importar registro de Car Scanner</label>
         <input id="fileImport" type="file" accept=".csv,text/csv,text/plain" hidden>
         <button id="btnWipe" class="btn danger">Borrar lo aprendido</button>
@@ -168,6 +170,7 @@
       </label>
       <p class="hint">Si al llenar el tanque ves que el consumo real es distinto, ajusta este factor. Ejemplo: la app marcó 10 L pero cargaste 11 L → 1.10.</p>
 
+      <p id="apkUpdate" class="result" hidden></p>
       <h3>Diagnóstico</h3>
       <dl class="diag">
         <dt>Versión de la app</dt><dd id="dVersion">--</dd>
@@ -194,6 +197,6 @@
   </nav>
 
   <div id="toast" class="toast" hidden></div>
-  <script type="module" src="js/app.js?v=2026-11-22d"></script>
+  <script type="module" src="js/app.js?v=2026-11-22e"></script>
 </body>
 </html>
