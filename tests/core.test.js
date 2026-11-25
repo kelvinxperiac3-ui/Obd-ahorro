@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { decode, parseSupported, extractBytes } from '../js/obd.js';
-import { cleanLines } from '../js/elm327.js';
+import { cleanLines, Elm327 } from '../js/elm327.js';
 import { fuelLph, kmPerL, mafFromMap } from '../js/fuel.js';
 import { GearLearner } from '../js/gears.js';
 import { RpmStats } from '../js/stats.js';
@@ -83,6 +83,20 @@ test('consejos', () => {
   const down = advise({ rpm: 1100, speed: 36, gear: 4, load: 80, throttle: 50 }, zone, g, 5);
   assert.equal(down.shift, 3);
   assert.equal(advise({ rpm: 800, speed: 0 }, zone, g, 5).color, 'idle');
+});
+
+test('5ª en carretera: zona aprendida baja no pinta rojo hasta pasar la zona de fábrica', () => {
+  // Viaje real del 24-11-2026: zona aprendida de 5ª ~1000–1750 y rojo desde 76 km/h.
+  const g = new GearLearner(5, null, [6.2, 11.0, 15.6, 20.7, 25.9]);
+  const learned = { min: 1000, max: 1750, learned: true };
+  const opts = { redMarginTop: 1200, topMax: 2900 };
+  const s = (rpm, speed) => ({ rpm, speed, gear: 5, load: 70, throttle: 25 });
+  assert.equal(advise(s(3737, 97), learned, g, 5, opts).color, 'yellow');
+  assert.equal(advise(s(4150, 107), learned, g, 5, opts).color, 'red');
+  // Sin topMax se comporta como antes.
+  assert.equal(advise(s(3737, 97), learned, g, 5, { redMarginTop: 1200 }).color, 'red');
+  // En marchas intermedias no cambia nada.
+  assert.equal(advise({ rpm: 3200, speed: 50, gear: 3, load: 50, throttle: 30 }, learned, g, 5, opts).color, 'red');
 });
 
 import { parseCarScanner } from '../js/import.js';
@@ -344,4 +358,61 @@ test('zona de 5ª: amplía el mejor rango cuando queda angosto', () => {
   assert.equal(z.learned, true);
   assert.equal(z.min, 2000);
   assert.equal(z.max, 2500);
+});
+
+import { fillGap } from '../js/fuel.js';
+
+test('corte de conexión andando: rellena km y litros con el promedio', () => {
+  // Viaje real del 24-11-2026: 65 s sin datos entre 94 y 100 km/h.
+  const g = fillGap({ speed: 94, lph: 9, rawLph: 9 }, { speed: 100, lph: 9.4, rawLph: 9.4 }, 65.66);
+  assert.ok(Math.abs(g.km - 1.769) < 0.01);
+  assert.ok(Math.abs(g.l - 0.168) < 0.01);
+  assert.ok(Math.abs(g.rawL - 0.168) < 0.01);
+  // No rellena: corte corto (se cuenta normal), muy largo, detenido o sin lectura previa.
+  assert.equal(fillGap({ speed: 94, lph: 9 }, { speed: 100, lph: 9 }, 3), null);
+  assert.equal(fillGap({ speed: 94, lph: 9 }, { speed: 100, lph: 9 }, 400), null);
+  assert.equal(fillGap({ speed: 0, lph: 0.9 }, { speed: 100, lph: 9 }, 60), null);
+  assert.equal(fillGap(null, { speed: 100, lph: 9 }, 60), null);
+});
+
+test('tramos: se cortan solo en paradas con el motor apagado y calculan el costo', async () => {
+  const { newLegs, legAdd, legResume, legCost, legsByDay, pricePerLiter, STOP_MS } = await import('../js/legs.js');
+  const L = newLegs();
+  const t0 = new Date('2026-11-25T09:00:00').getTime();
+  // Primer tramo: 4 km, 0.3 L. Semáforo de 1 min con el motor andando: sigue el mismo tramo.
+  legAdd(L, 4, 0.3, t0);
+  legAdd(L, 0, 0.01, t0 + 60_000);
+  assert.equal(legResume(L, t0 + 61_000, 1300), null);
+  // Parada de venta: 15 min con el motor apagado → el tramo se cierra con el precio de ese momento.
+  const done = legResume(L, t0 + 60_000 + 15 * 60_000, 1300);
+  assert.equal(done.km, 4);
+  assert.equal(done.price, 1300);
+  assert.equal(legCost(done.l, done.price), 403); // 0.31 L × $1300
+  assert.equal(L.cur, null);
+  // Mover el auto unos metros no cuenta como tramo.
+  legAdd(L, 0.05, 0.01, t0 + 20 * 60_000);
+  assert.equal(legResume(L, t0 + 20 * 60_000 + STOP_MS + 1, 1300), null);
+  assert.equal(L.list.length, 1);
+  // Precio por litro desde la boleta; sin precio no hay costo.
+  assert.equal(pricePerLiter(42000, 32.5), 1292);
+  assert.equal(pricePerLiter(42000, ''), null);
+  assert.equal(legCost(1, null), null);
+  // Totales del día.
+  legAdd(L, 6, 0.5, t0 + 30 * 60_000);
+  legResume(L, t0 + 60 * 60_000, 1300);
+  const [day] = legsByDay(L.list);
+  assert.equal(day.legs.length, 2);
+  assert.equal(day.km, 10);
+});
+
+// Adaptador de mentira: contesta cada comando con lo que diga `answers` (o OK).
+function fakeElm(answers) {
+  const t = { onData: null, async write(s) { const c = s.trim(); setTimeout(() => t.onData(`${answers[c] ?? 'OK'}\r\r>`), 1); } };
+  return new Elm327(t);
+}
+
+test('inicio del adaptador: solo vale si la camioneta contesta 4100 (no una respuesta corrida)', async () => {
+  await assert.doesNotReject(fakeElm({ ATZ: 'ELM327 v1.5', '0100': 'SEARCHING...\r41 00 BE 3E B8 01' }).init());
+  await assert.rejects(fakeElm({ '0100': 'NO DATA' }).init(), /contacto/);
+  await assert.rejects(fakeElm({ '0100': 'OK' }).init(), /contacto/); // respuesta atrasada de otro comando
 });

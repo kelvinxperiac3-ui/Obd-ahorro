@@ -33,6 +33,23 @@ export function fuelLph(s, cfg = DEFAULT_ENGINE) {
   return { lph: (maf * 3600) / (cfg.afr * cfg.density), method };
 }
 
+export const MAX_GAP_FILL = 180; // segundos: un corte más largo no se rellena
+
+/**
+ * Corte de conexión andando (Bluetooth que se cae y vuelve): estima los km y litros de ese rato
+ * con el promedio de la lectura de antes y la de después. Sin esto el viaje queda corto y el
+ * factor del tanque se desvía. prev/cur: { speed, lph, rawLph }. Devuelve null si no aplica.
+ */
+export function fillGap(prev, cur, dt) {
+  if (!prev || dt < 5 || dt > MAX_GAP_FILL) return null;
+  if (prev.speed == null || cur.speed == null || prev.speed < 5 || cur.speed < 5) return null;
+  const avg = (a, b) => (a == null || b == null ? null : (a + b) / 2);
+  const h = dt / 3600;
+  const lph = avg(prev.lph, cur.lph);
+  const rawLph = avg(prev.rawLph, cur.rawLph);
+  return { km: avg(prev.speed, cur.speed) * h, l: lph == null ? 0 : lph * h, rawL: rawLph == null ? null : rawLph * h };
+}
+
 /** km/L a partir de velocidad (km/h) y L/h. null si va detenido. */
 export function kmPerL(speed, lph) {
   if (speed == null || lph == null || speed < 3) return null;

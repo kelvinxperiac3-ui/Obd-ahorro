@@ -139,6 +139,7 @@ export class SimTransport {
   }
 
   async write(str) {
+    if (this.closed) throw new Error('Sin conexión Bluetooth');
     const cmd = str.trim().toUpperCase();
     this.step();
     // Atajo "1" al final: el ELM contesta sin esperar a otras computadoras (más rápido).
@@ -175,6 +176,7 @@ export class SimTransport {
     if (cmd === 'ATAT2') { this.at2 = true; return 'OK'; }
     if (cmd === 'ATAT1') { this.at2 = false; return 'OK'; }
     if (cmd.startsWith('AT')) return 'OK';
+    if (this.engineOff && cmd.startsWith('01')) return 'NO DATA'; // para probar paradas: la ECU no contesta
     if (/^01(00|20|40)$/.test(cmd)) return mask(cmd.slice(2), this.M.pids);
     if (/^01([0-9A-F]{2}){2,6}$/.test(cmd)) return this.multi(cmd.slice(2).match(/../g));
     const pid = cmd.slice(2);

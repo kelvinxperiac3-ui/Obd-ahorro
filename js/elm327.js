@@ -76,7 +76,9 @@ export class Elm327 {
     // 0100 obliga a buscar el protocolo del vehículo (puede tardar).
     const r = await this.send('0100', 15000);
     this.log(`0100 → ${r.join(' | ')}`);
-    if (r.some((l) => /UNABLE|ERROR|NO DATA/i.test(l))) {
+    // La respuesta buena trae "4100…". Si llega otra cosa (por ejemplo la respuesta atrasada de
+    // una pregunta de antes de un corte), la camioneta en realidad no contestó.
+    if (r.some((l) => /UNABLE|ERROR|NO DATA/i.test(l)) || !r.some((l) => l.replace(/\s/g, '').includes('4100'))) {
       throw new Error('El adaptador no logra hablar con la camioneta. ¿Está el contacto en ON?');
     }
     let protocol = '';

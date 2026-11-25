@@ -36,8 +36,12 @@ export function advise(s, zone, gears, nGears, opts = {}) {
 
   if (s.rpm > zone.max) {
     // En la última marcha ir más rápido gasta más, pero no es "error": rojo solo bastante arriba.
-    const margin = g === nGears ? (opts.redMarginTop ?? 1200) : (opts.redMargin ?? 600);
-    const color = s.rpm > zone.max + margin ? 'red' : 'yellow';
+    // En la última marcha las RPM son la velocidad: la zona aprendida suele quedar baja (lo más
+    // lento rinde más) y pintaría rojo toda la carretera. El rojo se mide desde la zona de fábrica.
+    const top = g === nGears;
+    const margin = top ? (opts.redMarginTop ?? 1200) : (opts.redMargin ?? 600);
+    const redBase = top && opts.topMax ? Math.max(zone.max, opts.topMax) : zone.max;
+    const color = s.rpm > redBase + margin ? 'red' : 'yellow';
     if (up && up >= Math.max(upMin, zone.min - 300)) return { color, msg: `Sube a ${gearName(g + 1)}`, shift: g + 1 };
     if (g === nGears) return { color, msg: opts.topHint || 'Más rápido = más consumo' };
     return { color, msg: 'RPM altas' };

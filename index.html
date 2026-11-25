@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="es" data-v="2026-11-22e">
+<html lang="es" data-v="2026-11-25b">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -57,6 +57,7 @@
         <div><b id="tripAvg">--</b><span>km/L viaje</span></div>
         <div><b id="tripGreen">--</b><span>% en verde</span></div>
       </div>
+      <div class="mini" id="tripCost"></div>
       <div class="mini" id="mini">Carga -- · Acelerador -- · L/h -- · Método --</div>
       <button id="btnTripReset" class="btn ghost small">Reiniciar viaje</button>
     </section>
@@ -104,6 +105,9 @@
         <label class="field">Odómetro en km (opcional, mejora la precisión)
           <input id="fillOdo" type="number" inputmode="numeric" step="1" min="0" placeholder="ej. 48210">
         </label>
+        <label class="field">Total pagado en pesos (opcional, para saber cuánto te cuesta cada viaje)
+          <input id="fillPaid" type="number" inputmode="numeric" step="1" min="0" placeholder="ej. 42000">
+        </label>
         <label class="check"><input id="fillFull" type="checkbox" checked> Llené hasta el corte de la pistola</label>
         <div class="row-btns tight">
           <button id="btnFill" class="btn primary" type="button">Registrar carga</button>
@@ -131,6 +135,15 @@
         <li>Espera al menos medio estanque entre cargas: con pocos km el error del llenado pesa mucho. Con 2–3 cargas el factor queda afinado.</li>
         <li>Si cargas sin llegar al corte, desmarca "Llené hasta el corte": esos litros se suman a la próxima carga completa.</li>
       </ol>
+    </section>
+
+    <!-- GASTOS -->
+    <section id="tab-cost" class="tab">
+      <h2>Gastos en bencina</h2>
+      <p class="lead" id="costPrice"></p>
+      <div class="card"><p id="costNow"></p></div>
+      <div id="legDays"></div>
+      <p class="hint">Cada vez que apagas el motor más de 3 minutos (por ejemplo, para atender un local), el tramo se cierra solo. Toca un tramo para anotar a dónde llegaste. El costo usa los litros calculados por la app (con el factor del tanque) y el precio de tu última carga.</p>
     </section>
 
     <!-- AJUSTES -->
@@ -193,10 +206,11 @@
     <button data-tab="drive" class="active">Manejar</button>
     <button data-tab="zone">Mi zona</button>
     <button data-tab="tank">Tanque</button>
+    <button data-tab="cost">Gastos</button>
     <button data-tab="cfg">Ajustes</button>
   </nav>
 
   <div id="toast" class="toast" hidden></div>
-  <script type="module" src="js/app.js?v=2026-11-22e"></script>
+  <script type="module" src="js/app.js?v=2026-11-25b"></script>
 </body>
 </html>

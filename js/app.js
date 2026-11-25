@@ -2,7 +2,7 @@ import { BleTransport } from './ble.js';
 import { SimTransport } from './sim.js';
 import { Elm327 } from './elm327.js';
 import { PIDS, decode, readSupported, parseMulti } from './obd.js';
-import { DEFAULT_ENGINE, fuelLph, kmPerL } from './fuel.js';
+import { DEFAULT_ENGINE, fuelLph, kmPerL, fillGap } from './fuel.js';
 import { GearLearner } from './gears.js';
 import { RpmStats, BUCKET, MIN_BUCKET_SECONDS } from './stats.js';
 import { vehicle, DEFAULT_VEHICLE } from './vehicles.js';
@@ -11,12 +11,13 @@ import { parseCarScanner } from './import.js';
 import { HillDetector, powerAdvice, pedalPct } from './power.js';
 import { advise, gearName } from './advise.js';
 import { newTank, addDriving, registerFill, undoFill, suggestedFactor } from './tank.js';
+import { newLegs, legAdd, legResume, legCost, legsByDay, pricePerLiter } from './legs.js';
 
 const $ = (id) => document.getElementById(id);
 // Dentro de la app Android (APK) se usan Bluetooth, voz, GPS y segundo plano nativos.
 const NATIVE = !!window.Capacitor?.isNativePlatform?.();
 const nat = NATIVE ? await import('./native.js') : null;
-export const APP_VERSION = '2026-11-22e';
+export const APP_VERSION = '2026-11-25b';
 // Si la página (HTML) es de otra versión que este código, se recarga una vez sin caché.
 if (document.documentElement.dataset.v !== APP_VERSION) {
   let tried = null;
@@ -51,6 +52,7 @@ let stats;
 let analyzer;
 let idleThrottle;
 let tank; // consumo real (tanque lleno a tanque lleno)
+let legs; // tramos entre paradas, con su costo
 let fullThrottle; // pedal/mariposa máxima vista (la MD201 llega a ~82 %)
 
 function loadVehicle(id) {
@@ -72,6 +74,7 @@ function loadVehicle(id) {
   stats = new RpmStats(store.get(`stats.${V.id}`, null));
   analyzer = new Analyzer(gears, stats);
   tank = Object.assign(newTank(), store.get(`tank.${V.id}`, {}));
+  legs = Object.assign(newLegs(), store.get(`legs.${V.id}`, {}));
   idleThrottle = store.get(`idleThr.${V.id}`, 100);
   fullThrottle = store.get(`fullThr.${V.id}`, 0);
 }
@@ -91,9 +94,13 @@ let elm = null;
 let running = false;
 let pollList = [];
 let slowList = [];
+let supported = new Set();   // PIDs que la ECU dijo tener (para rearmar la lista)
+let fastBest = { multi: false, suffix: false }; // lo mejor que funcionó en testFast
+let engineBack = false;      // el motor volvió tras estar apagado: rearmar la lectura
 let cycle = 0;
 let noData = {};
 let lastTs = 0;
+let lastRead = null; // última lectura (velocidad y consumo), para rellenar cortes de conexión
 let lastSave = 0;
 let lastSpoken = { msg: '', at: 0 };
 let wakeLock = null;
@@ -117,6 +124,16 @@ const tripLog = [];
 function newTrip() { return { km: 0, l: 0, t: 0, green: 0, start: Date.now() }; }
 let pendingReload = false;
 let lastDataAt = 0; // última lectura con motor encendido (para separar viajes)
+let prevTripLog = []; // el viaje anterior, para poder exportarlo después de empezar otro
+// Más de 1 hora sin motor (aunque la app siga conectada toda la noche): es otro viaje.
+// Las paradas de venta (10–20 min con el motor apagado) quedan dentro del mismo viaje.
+// Los contadores y el CSV no mezclan viajes; el anterior queda guardado para exportarlo.
+function newTripIfIdle() {
+  if (!lastDataAt || Date.now() - lastDataAt <= 60 * 60 * 1000) return;
+  if (tripLog.length) prevTripLog = tripLog.splice(0);
+  Object.assign(trip, newTrip());
+  log('Viaje nuevo');
+}
 
 // ---------- log ----------
 const logLines = [];
@@ -182,12 +199,6 @@ async function start(kind) {
     $('btnDemo').hidden = true;
     running = true;
     lastTs = 0;
-    if (lastDataAt && Date.now() - lastDataAt > 10 * 60 * 1000) {
-      // Más de 10 min sin datos: es otro viaje (el CSV no mezcla viajes).
-      Object.assign(trip, newTrip());
-      tripLog.length = 0;
-      log('Viaje nuevo');
-    }
     useGps = !!V.gpsSpeed;
     zeroSpeedSince = null;
     startGps();
@@ -240,6 +251,7 @@ function setConn(state, name) {
 }
 
 function buildPollList(sup) {
+  supported = sup;
   const has = (p) => sup.size === 0 || sup.has(p);
   pollList = V.gpsSpeed ? ['0C'] : ['0C', '0D']; // el Homan informa velocidad 0: se usa GPS
   slowList = [];
@@ -307,6 +319,7 @@ async function testFast() {
   } catch (e) {
     log('Prueba de lectura rápida: ' + e.message);
   }
+  fastBest = { multi, suffix };
   showFast();
 }
 
@@ -328,6 +341,17 @@ function dropPid(pid) {
     log('Sin MAF: calculo con MAP + temperatura de admisión');
   }
   showPids();
+}
+
+// Al volver el motor o tras reconectar: otra vez la lista completa y la lectura más rápida
+// que funcionó. Si algo de eso de verdad no responde, las vueltas siguientes lo quitan solas.
+function restorePolling(why) {
+  const before = pollList.length + slowList.length;
+  buildPollList(supported);
+  if (pollList.length + slowList.length > before) log(`${why}: vuelvo a pedir todos los datos`);
+  multi = fastBest.multi;
+  suffix = fastBest.suffix;
+  showFast();
 }
 
 function showPids() {
@@ -382,19 +406,34 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ---------- reconexión automática ----------
-// Si el adaptador se desconecta (corte de Bluetooth, segundo plano, bache), intenta volver
-// a conectar al mismo adaptador sin pedir nada. El viaje sigue donde iba.
+// Si el adaptador se desconecta (corte de Bluetooth, se duerme con el motor apagado, segundo
+// plano), intenta volver a conectar al mismo adaptador sin pedir nada. El viaje sigue donde iba.
+// Primero rápido; después cada 20 s, hasta 90 min (una parada larga de venta). Si el Bluetooth
+// conecta pero el contacto está apagado, la camioneta no contesta: también se sigue esperando.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const RECONNECT_FOR = 90 * 60 * 1000;
 async function reconnect() {
   if (!transport?.reconnect) { toast('Se perdió la conexión con el adaptador'); stop(); return; }
   reconnecting = true;
   setConn('busy', 'Reconectando…');
-  for (let i = 1; i <= 6 && running; i++) {
+  renderNoEngine();
+  $('advice').textContent = 'Reconectando con el adaptador…';
+  const since = Date.now();
+  for (let i = 1; running && Date.now() - since < RECONNECT_FOR; i++) {
+    const say = i <= 6 || i % 10 === 0; // sin llenar el registro en una parada larga
     try {
-      log(`Reconectando (intento ${i})…`);
-      await transport.reconnect(log);
-      elm = new Elm327(transport, log);
+      if (say) log(`Reconectando (intento ${i})…`);
+      // Si el Bluetooth sigue conectado (solo faltó la camioneta), no hace falta rehacerlo.
+      if (!transport.connected || i % 3 === 0) await transport.reconnect(say ? log : () => {});
+      // Que termine (o se dé por perdida) la pregunta que iba en el aire antes del corte, para
+      // que su respuesta atrasada no se confunda con las nuevas.
+      const old = elm;
+      await Promise.race([old?.queue, sleep(3000)]);
+      elm = new Elm327(transport, say ? log : () => {});
+      elm.draining = !!old?.draining;
       await elm.init();
+      elm.log = log;
+      buildPollList(supported); // otra vez todos los datos (con el motor apagado se pudo perder alguno)
       await testFast();
       reconnecting = false;
       setConn('on', transport.name);
@@ -402,8 +441,9 @@ async function reconnect() {
       log('Reconectado');
       return;
     } catch (e) {
-      log(`Reconexión ${i}: ${e.message}`);
-      await sleep(Math.min(8000, 1500 * i));
+      if (say) log(`Reconexión ${i}: ${e.message}`);
+      if (i === 6) { setConn('busy', 'Esperando al adaptador…'); $('advice').textContent = 'Esperando al adaptador: se conecta solo al dar el contacto'; }
+      await sleep(i < 6 ? 1500 * i : 20000);
     }
   }
   reconnecting = false;
@@ -439,6 +479,7 @@ const cmdFor = (pids) => '01' + pids.join('') + (suffix ? '1' : '');
 async function loop() {
   while (running) {
     if (reconnecting) { await sleep(300); continue; }
+    if (engineBack) { engineBack = false; restorePolling('Motor encendido de nuevo'); }
     const s = {};
     const list = cycleList(cycle++);
     const t0 = performance.now();
@@ -449,7 +490,8 @@ async function loop() {
         try {
           const vals = parseMulti(await elm.send(cmdFor(chunk), 2500), chunk);
           for (const pid of chunk) {
-            if (vals[pid] != null) { s[PIDS[pid].key] = vals[pid]; noData[pid] = 0; } else noData[pid] = (noData[pid] || 0) + 1;
+            if (vals[pid] != null) { s[PIDS[pid].key] = vals[pid]; noData[pid] = 0; }
+            else if (pid === '0C' || vals['0C'] != null) noData[pid] = (noData[pid] || 0) + 1; // motor apagado no cuenta
           }
           rate.q++;
         } catch (e) {
@@ -469,7 +511,9 @@ async function loop() {
         try {
           const lines = await elm.send(cmdFor([pid]), 2000);
           const v = decode(lines, pid);
-          if (v != null) { s[PIDS[pid].key] = v; noData[pid] = 0; } else {
+          if (v != null) { s[PIDS[pid].key] = v; noData[pid] = 0; } else if (pid === '0C' || s.rpm != null) {
+            // Si las RPM tampoco contestan, el motor está apagado: la ECU no responde nada y eso
+            // no quiere decir que el dato no exista (antes se dejaban de pedir y el km/L quedaba en --).
             noData[pid] = (noData[pid] || 0) + 1;
             if (noData[pid] >= 6 && !FAST.has(pid)) dropPid(pid);
             if (suffix && pid === '0C' && noData[pid] >= 3) {
@@ -503,14 +547,24 @@ function process(s) {
     lastTs = 0;
     return;
   }
+  if (noRpm >= 3) engineBack = true;
   noRpm = 0;
+  const done = legResume(legs, Date.now(), tank.price);
+  if (done) {
+    log(`Tramo terminado: ${done.km.toFixed(1)} km, ${done.l.toFixed(2)} L`);
+    if ($('tab-cost').classList.contains('active')) renderCostTab();
+  }
+  newTripIfIdle();
   lastDataAt = Date.now();
   // Los PIDs lentos (temperatura, carga) se leen cada pocos ciclos: usar el último valor.
   // Los datos que no se piden en cada vuelta (consumo, pedal, temperatura…) usan el último valor
   // leído, si es reciente.
   for (const k of Object.keys(s)) liveAt[k] = now;
+  // La temperatura y la carga se leen cada 16 vueltas en K-Line (~6 s): se les da más margen
+  // para que no queden huecos justo antes de la siguiente lectura.
   for (const k of ['speed', 'map', 'maf', 'throttle', 'pedalD', 'fuelRate', 'fuelSys', 'iat', 'load']) {
-    if (s[k] == null && live[k] != null && now - (liveAt[k] || 0) < 6000) s[k] = live[k];
+    const maxAge = k === 'iat' || k === 'load' ? 15000 : 6000;
+    if (s[k] == null && live[k] != null && now - (liveAt[k] || 0) < maxAge) s[k] = live[k];
   }
 
   // Velocidad: OBD, o GPS si el vehículo no la informa (o informa 0 andando).
@@ -555,20 +609,32 @@ function process(s) {
   if (!adv) {
     adv = advise({ ...s, throttle: pedal, lph, gear, fuelCut }, zone, gears, cfg.nGears, {
       lugRpm: V.lugRpm, upMinRpm: V.upMinRpm, idleRpm: V.idleRpm,
-      redMargin: V.fuel === 'diesel' ? 400 : 600, redMarginTop: V.fuel === 'diesel' ? 600 : 1200,
+      redMargin: V.fuel === 'diesel' ? 400 : 600, redMarginTop: V.fuel === 'diesel' ? 600 : 1200, topMax: V.ecoTop.max,
       topHint: gear === cfg.nGears ? topGearHint(s.speed) : null,
     });
   }
 
+  // Para el consumo real: km y litros estimados SIN el factor de corrección.
+  const rawLph = f ? (fuelCut ? 0 : f.lph) : null;
   if (dt > 0 && dt < 5) {
-    // Para el consumo real: km y litros estimados SIN el factor de corrección.
-    const rawLph = f ? (fuelCut ? 0 : f.lph) : null;
     if (s.speed != null && rawLph != null) addDriving(tank, (s.speed * dt) / 3600, (rawLph * dt) / 3600);
     if (s.speed != null) trip.km += (s.speed * dt) / 3600;
     if (lph != null) trip.l += (lph * dt) / 3600;
     trip.t += dt;
     if (adv.color === 'green') trip.green += dt;
+    legAdd(legs, s.speed != null ? (s.speed * dt) / 3600 : 0, lph != null ? (lph * dt) / 3600 : 0, Date.now());
+  } else {
+    const gap = fillGap(lastRead, { speed: s.speed, lph, rawLph }, dt);
+    if (gap) {
+      if (gap.rawL != null) addDriving(tank, gap.km, gap.rawL);
+      trip.km += gap.km;
+      trip.l += gap.l;
+      trip.t += dt;
+      legAdd(legs, gap.km, gap.l, Date.now());
+      log(`Corte de ${Math.round(dt)} s andando: estimo ${gap.km.toFixed(2)} km y ${gap.l.toFixed(2)} L`);
+    }
   }
+  lastRead = { speed: s.speed, lph, rawLph };
 
   const kml = kmPerL(s.speed, lph);
   if (tripLog.length < 30000) {
@@ -617,6 +683,7 @@ function save(force) {
   store.set(`gears.${V.id}`, gears.toJSON());
   store.set(`stats.${V.id}`, stats.toJSON());
   store.set(`tank.${V.id}`, tank);
+  store.set(`legs.${V.id}`, legs);
   store.set(`idleThr.${V.id}`, idleThrottle);
   store.set(`fullThr.${V.id}`, fullThrottle);
   if (force) renderZoneTab();
@@ -679,6 +746,9 @@ function render(s, d) {
   $('tripL').textContent = trip.l.toFixed(2);
   $('tripAvg').textContent = trip.l > 0.01 ? (trip.km / trip.l).toFixed(1) : '--';
   $('tripGreen').textContent = trip.t > 5 ? Math.round((trip.green / trip.t) * 100) : '--';
+  $('tripCost').textContent = tank.price
+    ? `Este viaje: ${money(legCost(trip.l, tank.price))}` + (legs.cur ? ` · Desde la última parada: ${money(legCost(legs.cur.l, tank.price))}` : '')
+    : 'Anota cuánto pagas al cargar bencina (pestaña Tanque) para ver el costo';
   $('mini').textContent = `Carga ${fmt(s.load)}% · Pedal ${fmt(d.pedal)}% · ${d.lph != null ? d.lph.toFixed(2) : '--'} L/h · ${d.method || '--'}`;
 
   const el = (performance.now() - rate.since) / 1000;
@@ -816,13 +886,16 @@ function download(name, text, type) {
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 $('btnCsv').onclick = () => {
-  if (!tripLog.length) { toast('No hay datos de este viaje todavía'); return; }
+  let rows = tripLog;
+  if (prevTripLog.length && (!tripLog.length || confirm('Hay un viaje anterior guardado. ¿Exportar ese en vez del actual?'))) rows = prevTripLog;
+  if (!rows.length) { toast('No hay datos de este viaje todavía'); return; }
   const head = 'hora,rpm,kmh,maf_gs,map_kpa,l_h,km_l,marcha,pedal,carga,color,modo_fuerza,fuente_velocidad';
-  download(`viaje-${new Date().toISOString().slice(0, 16).replace(':', '')}.csv`, [head, ...tripLog.map((r) => r.join(','))].join('\n'), 'text/csv');
+  // El nombre lleva la hora en que empezó el viaje (no la de exportar).
+  download(`viaje-${String(rows[0][0]).slice(0, 16).replace(':', '')}.csv`, [head, ...rows.map((r) => r.join(','))].join('\n'), 'text/csv');
 };
 // Respaldo completo (los dos vehículos): sirve para pasar los datos de Chrome a la app
 // Android, o a otro teléfono.
-const DATA_KEYS = ['cfg', 'gears', 'stats', 'tank', 'idleThr', 'fullThr'];
+const DATA_KEYS = ['cfg', 'gears', 'stats', 'tank', 'idleThr', 'fullThr', 'legs']; // legs = tramos y gastos por día
 $('btnJson').onclick = () => {
   save();
   const vehicles = {};
@@ -975,9 +1048,14 @@ $('btnFill').onclick = () => {
   const liters = $('fillL').value;
   const full = $('fillFull').checked;
   if (tank.period && !(Number(liters) > 0)) { toast('Anota los litros que cargaste (los marca la bomba)'); return; }
+  const paid = $('fillPaid').value;
+  if (Number(paid) > 0 && !(Number(liters) > 0)) { toast('Para sacar el precio por litro anota también los litros'); return; }
   const r = registerFill(tank, { liters, odo: $('fillOdo').value, full });
+  const price = pricePerLiter(paid, liters);
+  if (price) { tank.price = price; tank.priceDate = new Date().toISOString(); }
   save();
   $('fillL').value = '';
+  $('fillPaid').value = '';
   $('fillOdo').value = '';
   $('fillFull').checked = true;
   showFillResult(r);
@@ -1103,6 +1181,49 @@ $('cmdForm').onsubmit = async (e) => {
   $('cmdIn').value = '';
 };
 
+// ---------- gastos (costo por tramo) ----------
+const money = (v) => (v == null ? '$ --' : '$' + Math.round(v).toLocaleString('es-CL'));
+const fmtTime = (ms) => new Date(ms).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+// Tramos guardados antes de anotar un precio usan el precio actual.
+const legPrice = (l) => l.price ?? tank.price;
+
+function renderCostTab() {
+  $('costPrice').innerHTML = tank.price
+    ? `Bencina a <b>${money(tank.price)}</b> el litro${tank.priceDate ? ` (carga del ${fmtDate(tank.priceDate)})` : ''}.`
+    : 'Todavía no sé el precio de la bencina. Al cargar, anota en la pestaña <b>Tanque</b> cuánto pagaste.';
+  const c = legs.cur;
+  $('costNow').innerHTML = c
+    ? `<b>Tramo en curso</b> desde las ${fmtTime(c.start)}: ${c.km.toFixed(1)} km, ${c.l.toFixed(2)} L → <b>${money(legCost(c.l, tank.price))}</b>`
+    : 'Sin tramo en curso.';
+  const box = $('legDays');
+  const days = legsByDay(legs.list);
+  if (!days.length) { box.innerHTML = '<p class="hint">Todavía no hay tramos. Se guardan solos cada vez que apagas el motor en una parada.</p>'; return; }
+  box.innerHTML = days.map((d) => {
+    const cost = tank.price || d.legs.some((l) => l.price) ? d.legs.reduce((s, l) => s + (legCost(l.l, legPrice(l)) ?? 0), 0) : null;
+    const rows = d.legs.map((l, i) => {
+      const from = d.legs[i + 1]?.to; // el tramo anterior del mismo día terminó donde empieza este
+      const where = from || l.to ? `${esc(from || '…')} → ${esc(l.to || '…')}` : '';
+      return `<tr data-i="${legs.list.indexOf(l)}"><td>${fmtTime(l.start)}–${fmtTime(l.end)}${where ? `<br><small>${where}</small>` : ''}</td>` +
+        `<td>${l.km.toFixed(1)} km</td><td>${l.l.toFixed(2)} L</td><td><b>${money(legCost(l.l, legPrice(l)))}</b></td></tr>`;
+    }).join('');
+    return `<h3>${fmtDate(d.date)}: ${d.km.toFixed(1)} km · ${money(cost)}</h3>` +
+      `<table class="gtable legs"><thead><tr><th>Hora</th><th>km</th><th>Litros</th><th>Costo</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }).join('');
+}
+
+$('legDays').onclick = (e) => {
+  const tr = e.target.closest('tr[data-i]');
+  if (!tr) return;
+  const leg = legs.list[Number(tr.dataset.i)];
+  const name = prompt('¿A dónde llegaste en este tramo? (ej. Almacén Don Juan)', leg.to || '');
+  if (name == null) return;
+  leg.to = name.trim().slice(0, 40);
+  save();
+  renderCostTab();
+};
+
 // ---------- pestañas ----------
 document.querySelectorAll('.tabs button').forEach((b) => {
   b.onclick = () => {
@@ -1110,6 +1231,7 @@ document.querySelectorAll('.tabs button').forEach((b) => {
     document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.id === 'tab-' + b.dataset.tab));
     if (b.dataset.tab === 'zone') renderZoneTab();
     if (b.dataset.tab === 'tank') renderTankTab();
+    if (b.dataset.tab === 'cost') renderCostTab();
   };
 });
 
